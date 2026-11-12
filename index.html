@@ -588,7 +588,8 @@ function suscribirMes(){
   S.unsub.forEach(u=>u());S.unsub=[];
   const meses=[addMes(S.mes,-1),S.mes,addMes(S.mes,1)];
   S.loaded={pagos:false,ingresos:false,banco:false};
-  const sub=(col,key)=>S.db.collection(col).where("mes","in",meses).limit(1000).onSnapshot(snap=>{
+  /* sin tope: la consulta trae todas las páginas (un mes puede tener más de 1000 pagos) */
+  const sub=(col,key)=>S.db.collection(col).where("mes","in",meses).onSnapshot(snap=>{
     S[key]=snap.docs.map(d=>({id:d.id,...d.data()}));S.loaded[key]=true;recomputar();refrescar();
     asegurarPerfiles([...S[key].map(r=>r.createdBy||r.creadoPor),...S[key].map(r=>r.updatedBy)]);
   },e=>{console.warn(col,e);toast("No se pudieron cargar los datos de "+col+".")});
