@@ -1465,13 +1465,16 @@ VIEWS.actividad={filtroU:"",eventos:[],cargando:false,mesCargado:null,
       this.met,h("div",{class:"card"},h("h3",null,"Registro de actividad"),this.tabla));},
   async cargar(force){
     if(this.cargando||(!force&&this.mesCargado===S.mes))return;this.cargando=true;this.mesCargado=S.mes;this.tabla.replaceChildren(tablaVacia("Cargando actividad…"));
+    /* la actividad traída de la versión anterior trae su propio autor en cada evento (uid "imp:…") */
     const ids=uniq([...Object.keys(S.people),S.uid]);const ev=[];
-    await Promise.all(ids.map(async uid=>{try{const s=await S.db.collection(`actividad/${uid}/dias`).where("mes","==",S.mes).get();s.docs.forEach(d=>(d.data().eventos||[]).forEach(e=>ev.push({...e,uid})))}catch(e){}}));
+    await Promise.all(ids.map(async uid=>{try{const s=await S.db.collection(`actividad/${uid}/dias`).where("mes","==",S.mes).get();s.docs.forEach(d=>(d.data().eventos||[]).forEach(e=>ev.push({uid,...e})))}catch(e){}}));
     this.eventos=ev.sort((a,b)=>b.at.localeCompare(a.at));this.cargando=false;this.pintar();
   },
   refresh(){$("#at").textContent="Actividad · "+mesNombre(S.mes);this.cargar(false);this.pintar()},
   pintar(){
-    const ids=uniq([...Object.keys(S.people),S.uid]);
+    /* también las personas de la versión anterior (autores "imp:…") que tengan registros o actividad este mes */
+    const imp=[...this.eventos.map(e=>e.uid),...S.pagos.map(r=>r.createdBy),...S.ingresos.map(r=>r.createdBy),...S.banco.map(b=>b.creadoPor)].filter(u=>String(u||"").startsWith("imp:"));
+    const ids=uniq([...Object.keys(S.people),S.uid,...imp]);
     this.sel.replaceChildren(h("option",{value:""},"Todas las personas"),ids.map(u=>h("option",{value:u,selected:this.filtroU===u?true:null},nombre(u))));
     const movById=new Map(S.movs.map(m=>[m.id,m]));
     const lag=(recs)=>{const ds=[];for(const r of recs){const mid=S.conc.recMov.get(r.id);const m=movById.get(mid);if(m&&r.createdAt)ds.push(Math.max(0,diasEntre(m.fecha,isoDia(r.createdAt))))}return ds};
@@ -1482,7 +1485,7 @@ VIEWS.actividad={filtroU:"",eventos:[],cargando:false,mesCargado:null,
       const lp=lag(p),li=lag(i);const avg=a=>a.length?(a.reduce((s,x)=>s+x,0)/a.length).toFixed(1).replace(".",","):"—";
       const lb=cargas.map(b=>{const f=(b.movs||[]).map(m=>m.fecha).sort().at(-1);return f?Math.max(0,diasEntre(f,isoDia(b.creadoEn))):null}).filter(x=>x!=null);
       const ult=S.people[uid]?.ultimaVez;
-      return h("div",{class:"card stack",style:"gap:6px"},h("div",{class:"row between"},h("strong",null,quien(uid)),h("span",{class:"chip neu"},ROLES[rolDe(uid)]||"Sin rol")),
+      return h("div",{class:"card stack",style:"gap:6px"},h("div",{class:"row between"},h("strong",null,quien(uid)),h("span",{class:"chip neu"},String(uid).startsWith("imp:")?"Versión anterior":(ROLES[rolDe(uid)]||"Sin rol"))),
         h("div",{class:"small muted"},"Última vez en la app: ",ult?fmtFH(ult):"—"),h("div",{class:"small"},`${ev.length} acciones este mes`),
         p.length?h("div",{class:"small"},`Pagos subidos: ${p.length} · tarda en promedio `,h("strong",null,avg(lp)+" días")," después del banco"):null,
         i.length?h("div",{class:"small"},`Ingresos clasificados: ${i.length} · tarda en promedio `,h("strong",null,avg(li)+" días")):null,
