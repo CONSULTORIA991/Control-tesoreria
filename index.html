@@ -902,21 +902,26 @@ const CAT_BASE={
     {g:"OTROS PAGOS",c:["TRASLADOS A CUENTAS PROPIAS","PENDIENTE POR IDENTIFICAR","PRÉSTAMO A TRABAJADOR"]}],
   clientes:[]
 };
-const cat=()=>{const c=S.cat||{};return {ingresos:c.ingresos?.length?c.ingresos:CAT_BASE.ingresos,pagos:c.pagos?.length?c.pagos:CAT_BASE.pagos,clientes:Array.isArray(c.clientes)?c.clientes:CAT_BASE.clientes,saldos:c.saldos||{}}};
+/* historico: cifras de meses anteriores a la app (sin banco cargado), tomadas de los informes que ya existían:
+   {"AAAA-MM":{ing:{concepto:valor},pag:{concepto:valor},cli:{"concepto|cliente":valor},fuente:"..."}} */
+const cat=()=>{const c=S.cat||{};return {ingresos:c.ingresos?.length?c.ingresos:CAT_BASE.ingresos,pagos:c.pagos?.length?c.pagos:CAT_BASE.pagos,clientes:Array.isArray(c.clientes)?c.clientes:CAT_BASE.clientes,saldos:c.saldos||{},historico:c.historico||{}}};
 const conceptosPago=()=>cat().pagos.flatMap(g=>g.c?.length?g.c:[g.g]);
 const enLista=(v,l)=>{const n=norm(v);return n?l.find(x=>norm(x)===n)||null:null};
 const clienteDe=t=>{const n=norm(t);const c=cat().clientes.find(x=>norm(x.n)===n||(x.alias&&norm(x.alias)===n));return c?c.n:"DIRECTOS"};
 const pegado=s=>norm(s).replace(/[^a-z0-9]/g,"");
 function clientePorDescripcion(desc){const d=pegado(desc);if(!d)return "";const c=cat().clientes.find(x=>[x.alias,x.n].some(a=>{const p=pegado(a);return p.length>=4&&d.includes(p)}));return c?c.n:""}
-async function guardarCatalogo(cambio){const c=cat();await S.db.doc("conc_config/catalogo").set({ingresos:c.ingresos,pagos:c.pagos,clientes:c.clientes,saldos:c.saldos,...cambio,actualizadoPor:S.uid,actualizadoEn:nowISO()})}
+async function guardarCatalogo(cambio){const c=cat();await S.db.doc("conc_config/catalogo").set({ingresos:c.ingresos,pagos:c.pagos,clientes:c.clientes,saldos:c.saldos,historico:c.historico,...cambio,actualizadoPor:S.uid,actualizadoEn:nowISO()})}
 /* saldo del banco al empezar un mes: parte del último saldo inicial escrito y suma los movimientos hasta ese mes */
 async function saldoAnterior(mes){
   const s=cat().saldos,bases=Object.keys(s).filter(k=>k<=mes).sort();if(!bases.length)return null;
   const b0=bases.at(-1);let v=Number(s[b0])||0;if(b0===mes)return v;
   const meses=[];for(let m=b0;m<mes;m=addMes(m,1))meses.push(m);if(meses.length>60)return null;
-  const enMemoria=[addMes(S.mes,-1),S.mes,addMes(S.mes,1)],faltan=meses.filter(m=>!enMemoria.includes(m));
-  for(let i=0;i<faltan.length;i+=30){const snap=await S.db.collection("banco").where("mes","in",faltan.slice(i,i+30)).get();snap.docs.forEach(d=>(d.data().movs||[]).forEach(x=>{v+=Number(x.valor)||0}))}
-  return v+S.movs.filter(m=>meses.includes(m.mes)&&enMemoria.includes(m.mes)).reduce((t,m)=>t+m.valor,0);
+  const enMemoria=[addMes(S.mes,-1),S.mes,addMes(S.mes,1)],faltan=meses.filter(m=>!enMemoria.includes(m)),conBanco=new Set();
+  for(let i=0;i<faltan.length;i+=30){const snap=await S.db.collection("banco").where("mes","in",faltan.slice(i,i+30)).get();snap.docs.forEach(d=>(d.data().movs||[]).forEach(x=>{v+=Number(x.valor)||0;conBanco.add(String(x.fecha||"").slice(0,7))}))}
+  for(const m of S.movs)if(meses.includes(m.mes)&&enMemoria.includes(m.mes)){v+=m.valor;conBanco.add(m.mes)}
+  /* meses sin banco que vienen de un informe anterior: se suman sus totales */
+  for(const m of meses){const H=cat().historico[m];if(H&&!conBanco.has(m)){const t=o=>Object.values(o||{}).reduce((s,x)=>s+(Number(x)||0),0);v+=t(H.ing)-t(H.pag)}}
+  return v;
 }
 const conceptos=()=>conceptosPago();
 const descIngresos=()=>cat().ingresos;
@@ -1340,6 +1345,15 @@ VIEWS.reportes={modo:"mensual",
   base(mes){
     const C=cat(),lp=conceptosPago(),ing=new Map(),pag=new Map(),cli=new Map();let pend=0;
     const add=(M,k,v)=>{const key=norm(k),x=M.get(key)||{k,v:0};x.v+=v;M.set(key,x)};
+    /* mes anterior a la app: sin banco cargado, se usan las cifras del informe que ya existía */
+    const H=C.historico[mes];
+    if(H&&!S.movs.some(m=>m.mes===mes)){
+      for(const [k,v] of Object.entries(H.ing||{}))add(ing,k,Number(v)||0);
+      for(const [k,v] of Object.entries(H.pag||{}))add(pag,k,Number(v)||0);
+      for(const [k,v] of Object.entries(H.cli||{}))add(cli,k,Number(v)||0);
+      const tot=M=>[...M.values()].reduce((s,x)=>s+x.v,0);
+      return {ing,pag,cli,pend:0,totIng:tot(ing),totPag:tot(pag),hist:H.fuente||"informe anterior"};
+    }
     for(const m of S.movs){if(m.mes!==mes)continue;const x=S.conc.byMov.get(m.id),v=Math.abs(m.valor);if(!x)pend++;
       if(m.valor>0){const k=x?(enLista(x.rec.descripcion,C.ingresos)||String(x.rec.descripcion||"SIN CONCEPTO").toUpperCase()):"PENDIENTE POR IDENTIFICAR";add(ing,k,v);add(cli,k+"|"+(x?clienteDe(x.rec.tercero):"DIRECTOS"),v)}
       else add(pag,x?(enLista(x.rec.concepto,lp)||String(x.rec.concepto||"SIN CONCEPTO").toUpperCase()):"PENDIENTE POR IDENTIFICAR",v)}
@@ -1359,7 +1373,7 @@ VIEWS.reportes={modo:"mensual",
   },
   pintarMensual(){
     const B=S.mes,A=addMes(B,-1),a=this.base(A),b=this.base(B),F=this.filas(a,b),nA=mesNombre(A).split(" ")[0].toUpperCase(),nB=mesNombre(B).split(" ")[0].toUpperCase();
-    const key=A+"|"+JSON.stringify(cat().saldos)+"|"+S.movs.length;
+    const key=A+"|"+JSON.stringify(cat().saldos)+"|"+Object.keys(cat().historico).join()+"|"+S.movs.length;
     if(this.saldoKey!==key){this.saldoKey=key;this.saldoA=undefined;saldoAnterior(A).then(v=>{if(this.saldoKey!==key)return;this.saldoA=v;if(S.view===this&&this.modo==="mensual")this.pintarMensual()}).catch(()=>{if(this.saldoKey===key)this.saldoA=null})}
     const sA=this.saldoA,hay=typeof sA==="number",sB=hay?sA+a.totIng-a.totPag:null,fin=hay?sB+b.totIng-b.totPag:null;
     const n=v=>v?numR.format(v):"-",td=v=>h("td",{class:"v"},n(v)),th=v=>h("th",{class:"v"},n(v));
@@ -1380,13 +1394,59 @@ VIEWS.reportes={modo:"mensual",
           h("button",{onclick:()=>imprimirInforme("Informe de ingresos y pagos",sub,filas,neg,false)},"Imprimir o guardar PDF"))),
       saldoBox,
       a.pend+b.pend?h("div",{class:"status warn"},`Hay ${a.pend+b.pend} movimientos del banco sin clasificar en estos dos meses. Mientras tanto salen como «PENDIENTE POR IDENTIFICAR».`):null,
-      h("div",{class:"kpis"},kpi("Saldo anterior",hay?fmt(sB):"—","al empezar "+mesNombre(B).toLowerCase()),kpi("Ingresos",fmt(b.totIng),nA+": "+fmt(a.totIng),"pos"),kpi("Pagos",fmt(b.totPag),nA+": "+fmt(a.totPag),"neg"),kpi("Saldo final",hay?fmt(fin):"—","al cerrar "+mesNombre(B).toLowerCase())),
+      ...[[a,nA],[b,nB]].filter(([x])=>x.hist).map(([x,nm])=>h("div",{class:"status info"},`Las cifras de ${nm} vienen del ${x.hist}: ese mes no tiene extracto del banco cargado en la app.`)),      h("div",{class:"kpis"},kpi("Saldo anterior",hay?fmt(sB):"—","al empezar "+mesNombre(B).toLowerCase()),kpi("Ingresos",fmt(b.totIng),nA+": "+fmt(a.totIng),"pos"),kpi("Pagos",fmt(b.totPag),nA+": "+fmt(a.totPag),"neg"),kpi("Saldo final",hay?fmt(fin):"—","al cerrar "+mesNombre(B).toLowerCase())),
       h("div",{class:"grid2",style:"grid-template-columns:repeat(auto-fit,minmax(340px,1fr))"},
         h("div",{class:"card"},h("div",{class:"tbl"},h("table",null,h("thead",null,h("tr",null,h("th",null,"Ingresos"),h("th",{class:"v"},nA),h("th",{class:"v"},nB))),
           h("tbody",null,F.ing.map(r=>h("tr",null,h("td",null,r[0]),td(r[1]),td(r[2])))),h("tfoot",null,h("tr",null,h("th",null,"Total ingresos"),th(a.totIng),th(b.totIng)))))),
         h("div",{class:"card"},h("div",{class:"tbl"},h("table",null,h("thead",null,h("tr",null,h("th",null,"Pagos"),h("th",{class:"v"},nA),h("th",{class:"v"},nB))),
           h("tbody",null,F.pag.map(x=>h("tr",null,h("td",{style:x.g?"font-weight:700":"padding-left:26px"},x.r[0]),h("td",{class:"v",style:x.g?"font-weight:700":null},n(x.r[1])),h("td",{class:"v",style:x.g?"font-weight:700":null},n(x.r[2]))))),
           h("tfoot",null,h("tr",null,h("th",null,"Total pagos"),th(a.totPag),th(b.totPag))))))));
+    if(esAdmin())this.box.append(this.fueraBox||(this.fueraBox=this.panelFuera()));
+  },
+  /* Conceptos escritos a mano que no están en la lista: la administradora los pasa a un concepto de la lista.
+     Cambia todos los registros (de cualquier mes) que tengan ese mismo texto, y deja la huella en su historial. */
+  panelFuera(){
+    const box=h("div",{class:"card stack",id:"fuera-lista"});
+    const PAL=s=>norm(s).replace(/[^a-z0-9 ]/g," ").split(/\s+/).filter(w=>w.length>2&&!["pago","pagos","del","las","los","por","para","con","de"].includes(w));
+    const sugerir=(k,lista)=>{const a=PAL(k);if(!a.length)return null;let best=null,bs=0;
+      for(const c of lista){const b=PAL(c);if(!b.length)continue;const s=b.filter(w=>a.some(x=>x===w||(w.length>4&&(x.startsWith(w.slice(0,5))||w.startsWith(x.slice(0,5)))))).length/b.length;if(s>bs){bs=s;best=c}}
+      return bs>=0.5?best:null};
+    const opciones=(tipo,sug)=>{const C=cat();
+      if(tipo==="pago")return [h("option",{value:""},"— Elige el concepto —"),...C.pagos.map(g=>g.c?.length?h("optgroup",{label:g.g},g.c.map(c=>h("option",{value:c,selected:c===sug?true:null},c))):h("option",{value:g.g,selected:g.g===sug?true:null},g.g))];
+      return [h("option",{value:""},"— Elige el concepto —"),...C.ingresos.map(c=>h("option",{value:c,selected:c===sug?true:null},c))]};
+    const cargar=async()=>{
+      box.replaceChildren(h("h3",{style:"margin:0"},"Conceptos fuera de la lista"),h("div",{class:"small muted"},"Buscando registros…"));
+      try{
+        const [ps,is]=await Promise.all([S.db.collection("pagos").get(),S.db.collection("ingresos").get()]);
+        const C=cat(),lp=conceptosPago();
+        const agrupar=(snap,campo,lista)=>{const M=new Map();for(const d of snap.docs){const r=d.data();if(!r||r.anulado||enLista(r[campo],lista))continue;
+          const key=norm(r[campo]);const g=M.get(key)||{k:String(r[campo]||"").trim()||"(sin concepto)",n:0,t:0,ids:[]};g.n++;g.t+=Math.abs(Number(r.valor)||0);g.ids.push(d.id);M.set(key,g)}
+          return [...M.values()].sort((x,y)=>y.t-x.t)};
+        pintar(agrupar(ps,"concepto",lp),agrupar(is,"descripcion",C.ingresos));
+      }catch(e){box.replaceChildren(h("h3",{style:"margin:0"},"Conceptos fuera de la lista"),h("div",{class:"status bad"},"No se pudieron buscar los registros."))}
+    };
+    const mover=async(tipo,g,destino,btn)=>{
+      const col=tipo==="pago"?"pagos":"ingresos",campo=tipo==="pago"?"concepto":"descripcion";btn.disabled=true;let n=0;
+      try{
+        const cola=[...g.ids];const w=async()=>{while(cola.length){const id=cola.shift();const ref=S.db.doc(`${col}/${id}`);const s=await ref.get();if(!s.exists)continue;const r=s.data();
+          const hist=[...(r.historial||[]),{at:nowISO(),by:S.uid,accion:"Reclasificado",cambios:[{campo:"Concepto",antes:r[campo]||"",despues:destino}]}];
+          await ref.update({[campo]:destino,updatedBy:S.uid,updatedAt:nowISO(),historial:hist});n++;btn.textContent=`${n}/${g.ids.length}…`}};
+        await Promise.all([w(),w(),w(),w()]);
+        registrarActividad("Reclasificó concepto",`${g.k} → ${destino} · ${n} ${tipo==="pago"?"pagos":"ingresos"}`);toast(`Listo: ${n} registros pasaron a «${destino}».`);cargar();
+      }catch(e){toast("No se pudo reclasificar todo. Revisa tu acceso e intenta de nuevo.");btn.disabled=false;btn.textContent="Reclasificar"}
+    };
+    const tabla=(tipo,grupos)=>{const lista=tipo==="pago"?conceptosPago():cat().ingresos;
+      if(!grupos.length)return h("div",{class:"status ok"},tipo==="pago"?"Todos los pagos tienen un concepto de la lista.":"Todos los ingresos tienen un concepto de la lista.");
+      return h("div",{class:"tbl",style:"max-height:560px;overflow:auto"},h("table",null,h("thead",null,h("tr",null,h("th",null,"Escrito como"),h("th",{class:"v"},"Registros"),h("th",{class:"v"},"Valor"),h("th",null,"Pasar a"),h("th",null,""))),
+        h("tbody",null,grupos.map(g=>{const sug=sugerir(g.k,lista);const sel=h("select",{style:"min-width:220px","aria-label":"Concepto de la lista para "+g.k},opciones(tipo,sug));
+          const btn=h("button",{class:"sm pri",onclick:e=>{const d=sel.value;if(!d){toast("Elige el concepto de la lista.");return}confirmarEnPagina(e.currentTarget,`Pasar ${g.n} a «${d}»`,()=>mover(tipo,g,d,btn))}},"Reclasificar");
+          return h("tr",null,h("td",{style:"white-space:normal;max-width:320px"},g.k,sug?h("div",{class:"small muted"},"Sugerido: "+sug):null),h("td",{class:"v"},String(g.n)),h("td",{class:"v"},fmt(g.t)),h("td",null,sel),h("td",null,btn))}))))};
+    const pintar=(fp,fi)=>box.replaceChildren(
+      h("div",{class:"row between"},h("h3",{style:"margin:0"},`Conceptos fuera de la lista · ${fp.length+fi.length}`),h("button",{class:"sm",onclick:cargar},"Actualizar")),
+      h("div",{class:"small muted"},"Son textos escritos a mano que no coinciden con la lista. Elige a qué concepto corresponde cada uno y presiona «Reclasificar»: cambian todos los registros con ese texto, de cualquier mes, y queda la huella en el historial de cada uno. La app propone uno cuando lo reconoce; revísalo antes de aplicar."),
+      h("h4",{style:"margin:6px 0 0"},`Pagos (${fp.length})`),tabla("pago",fp),
+      h("h4",{style:"margin:6px 0 0"},`Ingresos (${fi.length})`),tabla("ingreso",fi));
+    cargar();return box;
   },
   pintarClientes(){
     const C=cat(),b=this.base(S.mes),cols=["DIRECTOS",...C.clientes.map(c=>c.n)],enCat=new Set(C.ingresos.map(norm));
