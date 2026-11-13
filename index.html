@@ -1365,7 +1365,7 @@ VIEWS.reportes={modo:"mensual",
   /* Base de los informes: los movimientos del banco del mes, cada uno con el concepto de su pago o ingreso.
      Lo que aún no está clasificado sale como PENDIENTE POR IDENTIFICAR, así los totales siempre cuadran con el banco. */
   base(mes){
-    const C=cat(),lp=conceptosPago(),ing=new Map(),pag=new Map(),cli=new Map();let pend=0;
+    const C=cat(),lp=conceptosPago(),ing=new Map(),pag=new Map(),cli=new Map(),det=new Map();let pend=0;
     const add=(M,k,v)=>{const key=norm(k),x=M.get(key)||{k,v:0};x.v+=v;M.set(key,x)};
     /* mes anterior a la app: sin banco cargado, se usan las cifras del informe que ya existía */
     const H=C.historico[mes];
@@ -1377,10 +1377,11 @@ VIEWS.reportes={modo:"mensual",
       return {ing,pag,cli,pend:0,totIng:tot(ing),totPag:tot(pag),hist:H.fuente||"informe anterior"};
     }
     for(const m of S.movs){if(m.mes!==mes)continue;const x=S.conc.byMov.get(m.id),v=Math.abs(m.valor);if(!x)pend++;
-      if(m.valor>0){const k=x?(enLista(x.rec.descripcion,C.ingresos)||String(x.rec.descripcion||"SIN CONCEPTO").toUpperCase()):"PENDIENTE POR IDENTIFICAR";add(ing,k,v);add(cli,k+"|"+(x?clienteDe(x.rec.tercero):"DIRECTOS"),v)}
+      if(m.valor>0){const k=x?(enLista(x.rec.descripcion,C.ingresos)||String(x.rec.descripcion||"SIN CONCEPTO").toUpperCase()):"PENDIENTE POR IDENTIFICAR";add(ing,k,v);
+        const kc=norm(k+"|"+(x?clienteDe(x.rec.tercero):"DIRECTOS"));add(cli,k+"|"+(x?clienteDe(x.rec.tercero):"DIRECTOS"),v);(det.get(kc)||det.set(kc,[]).get(kc)).push({m,rec:x?.rec||null})}
       else add(pag,x?(enLista(x.rec.concepto,lp)||String(x.rec.concepto||"SIN CONCEPTO").toUpperCase()):"PENDIENTE POR IDENTIFICAR",v)}
     const tot=M=>[...M.values()].reduce((s,x)=>s+x.v,0);
-    return {ing,pag,cli,pend,totIng:tot(ing),totPag:tot(pag)};
+    return {ing,pag,cli,det,pend,totIng:tot(ing),totPag:tot(pag)};
   },
   filas(a,b){
     const C=cat(),val=(M,k)=>M.get(norm(k))?.v||0,s=(fs,i)=>fs.reduce((t,f)=>t+f[i],0);
@@ -1513,8 +1514,27 @@ VIEWS.reportes={modo:"mensual",
           h("button",{onclick:()=>imprimirInforme("Ingresos por cliente",sub,filas,neg,true)},"Imprimir o guardar PDF"))),
       b.pend?h("div",{class:"status warn"},`Hay ${b.pend} movimientos del banco sin clasificar este mes; los ingresos sin clasificar salen como «PENDIENTE POR IDENTIFICAR» en DIRECTOS.`):null,
       h("div",{class:"card"},h("div",{class:"tbl"},h("table",null,h("thead",null,h("tr",null,filas[0].map((c,i)=>h("th",{class:i?"v":null,style:"white-space:normal;min-width:"+(i?"92px":"190px")},c)))),
-        h("tbody",null,h("tr",null,filas[1].map((c,i)=>h("td",{class:"small muted"+(i?" v":""),style:"font-family:var(--f-body)"},c))),cuerpo.map(r=>h("tr",null,r.map((c,i)=>h("td",{class:i?"v":null,style:i===r.length-1?"font-weight:700":null},n(c)))))),
+        h("tbody",null,h("tr",null,filas[1].map((c,i)=>h("td",{class:"small muted"+(i?" v":""),style:"font-family:var(--f-body)"},c))),cuerpo.map(r=>h("tr",null,r.map((c,i)=>{
+          /* cada valor se puede tocar para ver qué terceros y movimientos lo forman */
+          const col=i>0&&i<r.length-1?cols[i-1]:null,items=col&&c?b.det?.get(norm(r[0]+"|"+col)):null;
+          return h("td",{class:i?"v":null,style:(i===r.length-1?"font-weight:700;":"")+(items?"cursor:pointer;text-decoration:underline dotted":""),title:items?"Ver los terceros":null,onclick:items?()=>this.detalleCelda(r[0],col,items):null},n(c))})))),
         h("tfoot",null,h("tr",null,tot.map((c,i)=>h("th",{class:i?"v":null},n(c)))))))));
+  },
+  /* Detalle de una celda del informe por cliente: terceros que la forman y sus movimientos del banco */
+  detalleCelda(concepto,cliente,items){
+    const g=new Map();for(const it of items){const t=it.rec?.tercero?.trim()||"(sin tercero: no clasificado)";const x=g.get(norm(t))||{t,v:0,l:[]};x.v+=Math.abs(it.m.valor);x.l.push(it);g.set(norm(t),x)}
+    const grupos=[...g.values()].sort((a,b)=>b.v-a.v),total=grupos.reduce((s,x)=>s+x.v,0);
+    const lista=h("div",{class:"stack"});
+    const ver=x=>lista.replaceChildren(h("div",{class:"row between"},h("h3",{style:"margin:0"},x.t),h("button",{class:"sm",onclick:pintar},"← Todos los terceros")),
+      h("div",{class:"tbl",style:"max-height:55vh;overflow:auto"},h("table",null,h("thead",null,h("tr",null,h("th",null,"Fecha"),h("th",null,"Banco"),h("th",null,"Tercero registrado"),h("th",{class:"v"},"Valor"))),
+        h("tbody",null,x.l.sort((a,b)=>a.m.fecha.localeCompare(b.m.fecha)).map(it=>h("tr",{class:it.rec?"click":null,onclick:it.rec?()=>verRegistro("ingreso",it.rec):null},h("td",{style:"white-space:nowrap"},fmtF(it.m.fecha)),h("td",{class:"small",style:"white-space:normal;max-width:320px"},it.m.desc||"—",it.m.ref?" · "+it.m.ref:""),h("td",null,it.rec?.tercero||"—"),h("td",{class:"v"},fmt(Math.abs(it.m.valor)))))))));
+    const pintar=()=>lista.replaceChildren(
+      h("p",{class:"small muted",style:"margin:0"},cliente==="DIRECTOS"?"Quedan en DIRECTOS los ingresos cuyo tercero no es un cliente de la lista (Informes de gerencia → Listas de conceptos y clientes). Si alguno es de un cliente, agrega su nombre como aparece aquí en la lista de clientes, o corrige el tercero del ingreso.":"Ingresos de este cliente en el mes."),
+      h("div",{class:"tbl",style:"max-height:55vh;overflow:auto"},h("table",null,h("thead",null,h("tr",null,h("th",null,"Tercero"),h("th",{class:"v"},"Movimientos"),h("th",{class:"v"},"Valor"),h("th",{class:"v"},"%"))),
+        h("tbody",null,grupos.map(x=>h("tr",{class:"click",onclick:()=>ver(x)},h("td",null,x.t),h("td",{class:"v"},String(x.l.length)),h("td",{class:"v"},fmt(x.v)),h("td",{class:"v"},total?Math.round(x.v/total*100)+"%":"—")))),
+        h("tfoot",null,h("tr",null,h("th",null,"Total"),h("th",{class:"v"},String(items.length)),h("th",{class:"v"},fmt(total)),h("th",null,""))))),
+      h("div",{class:"row"},h("button",{onclick:()=>excelAOA(`${concepto}-${cliente}-${S.mes}.xlsx`.replace(/[\\/:*?"<>|]/g,"-"),"Detalle",[[`${concepto} · ${cliente} · ${mesNombre(S.mes)}`],[],["Fecha","Banco","Referencia","Tercero","Valor"],...items.map(it=>[fmtF(it.m.fecha),it.m.desc||"",it.m.ref||"",it.rec?.tercero||"",Math.abs(it.m.valor)])]).catch(()=>toast("No se pudo generar el Excel."))},"Descargar detalle en Excel")));
+    pintar();abrirModal(`${concepto} · ${cliente}`,lista,{ancho:900});
   },
   pintarListas(){
     const C=cat(),T={};
