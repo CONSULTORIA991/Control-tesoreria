@@ -669,6 +669,20 @@ async function leerComprobante(file,onEstado){
   try{return await tarea}catch(e){console.warn("lectura",e);return {error:"No se pudo leer el comprobante automáticamente. Escribe los datos a mano."}}
 }
 function terceroPorNit(nit){const d=String(nit||"").replace(/\D/g,"");if(d.length<6)return "";const r=[...S.pagos,...S.ingresos].find(p=>String(p.nit||"").replace(/\D/g,"")===d&&p.tercero);return r?.tercero||""}
+/* La app aprende de los pagos ya registrados (y de lo que la administradora reclasifica):
+   para un tercero, propone el concepto oficial que más se le ha puesto. Solo cuenta conceptos de la lista oficial. */
+function sugerenciaConcepto(tercero){
+  const t=pegado(tercero);if(t.length<3)return null;const lp=conceptosPago(),c=new Map();
+  const igual=a=>a===t||(Math.min(a.length,t.length)>=6&&(a.startsWith(t)||t.startsWith(a)));
+  for(const p of S.pagos){if(p.anulado||!igual(pegado(p.tercero)))continue;const k=enLista(p.concepto,lp);if(k)c.set(k,(c.get(k)||0)+1)}
+  let best=null;for(const [k,n] of c)if(!best||n>best.n)best={c:k,n};return best}
+function pistaConcepto(inpT,inpC){
+  const box=h("div",{class:"small muted",style:"margin-top:4px"});
+  const ver=()=>{const s=sugerenciaConcepto(inpT.value);if(!s){box.replaceChildren();return}
+    if(!inpC.value.trim()&&!inpC.disabled){inpC.value=s.c;inpC.classList.add("ia");inpC.classList.remove("falta")}
+    box.replaceChildren(norm(inpC.value)===norm(s.c)?`Sugerido por el tercero (usado ${s.n} ${s.n===1?"vez":"veces"}).`
+      :h("span",null,"Para este tercero se usa: ",h("button",{type:"button",class:"sm",onclick:()=>{inpC.value=s.c;inpC.classList.remove("falta");ver()}},s.c)))};
+  inpT.addEventListener("change",ver);inpT.addEventListener("input",()=>{clearTimeout(box.t);box.t=setTimeout(ver,400)});inpC.addEventListener("input",ver);box.ver=ver;return box}
 /* fila de un comprobante en el lote de pagos (también se usa desde Pendientes) */
 function crearFilaPago(file,mov,onQuitar){
   const R={file,mov,ia:{},guardado:false,leido:null};const I={};
@@ -678,7 +692,7 @@ function crearFilaPago(file,mov,onQuitar){
   I.tercero=h("input",{list:"dl-terceros",autocomplete:"off",placeholder:"A quién se le pagó",onchange:()=>{if(!I.nit.value)I.nit.value=nitDe(I.tercero.value)}});
   I.nit=h("input",{placeholder:"NIT / C.C.",autocomplete:"off"});I.concepto=h("input",{list:"dl-conceptos",autocomplete:"off",placeholder:"Ej. Proveedores"});I.detalle=h("input",{placeholder:"Opcional",autocomplete:"off"});
   if(mov){I.fecha.readOnly=true;I.valor.readOnly=true}
-  R.I=I;
+  R.I=I;const pista=pistaConcepto(I.tercero,I.concepto);
   const marcar=(k,on)=>I[k].classList.toggle("ia",!!on);
   const verBanco=()=>{
     if(R.guardado)return;
@@ -692,7 +706,7 @@ function crearFilaPago(file,mov,onQuitar){
   const url=URL.createObjectURL(file);
   const mini=h("a",{class:"mini",href:url,target:"_blank",rel:"noopener",title:"Ver comprobante"},tipoArchivo(file).startsWith("image/")?h("img",{src:url,alt:"Comprobante"}):h("span",{class:"small"},"PDF"));
   R.el=h("div",{class:"lote-fila"},mini,
-    h("div",{class:"lote-campos"},lbl("Fecha",I.fecha,1),lbl("Valor",I.valor,1),lbl("Tercero",I.tercero,1),lbl("NIT / C.C.",I.nit),lbl("Concepto",I.concepto,1),lbl("Detalle",I.detalle)),
+    h("div",{class:"lote-campos"},lbl("Fecha",I.fecha,1),lbl("Valor",I.valor,1),lbl("Tercero",I.tercero,1),lbl("NIT / C.C.",I.nit),lbl("Concepto",[I.concepto,pista],1),lbl("Detalle",I.detalle)),
     h("div",{class:"lote-pie"},h("div",{class:"row",style:"gap:8px"},estado,banco),onQuitar?h("button",{type:"button",class:"sm",onclick:()=>onQuitar(R)},"Quitar"):null));
   R.leer=async()=>{
     const r=await leerComprobante(file,t=>{estado.textContent=t});R.leido=r;
@@ -703,13 +717,15 @@ function crearFilaPago(file,mov,onQuitar){
     if(!I.nit.value&&r.nit){I.nit.value=r.nit;marcar("nit",1)}
     if(!I.tercero.value){const t=r.tercero||terceroPorNit(r.nit);if(t){I.tercero.value=t;R.ia.tercero=true;marcar("tercero",1);got.push("tercero")}}
     if(!estado.className.includes("warn-t")){estado.className="small muted";estado.textContent=(got.length?"Leído: "+got.join(", ")+". ":"")+(I.tercero.value?"Revisa y completa el concepto.":"No se ve el tercero: escríbelo.")}
+    pista.ver();
     if(!I.tercero.value)I.tercero.classList.add("falta");if(!I.concepto.value)I.concepto.classList.add("falta");
     verBanco();
   };
   R.validar=()=>{
     const valor=Math.abs(parseMonto(I.valor.value)||0),tercero=I.tercero.value.trim(),concepto=I.concepto.value.trim(),fecha=I.fecha.value;
-    const enCat=enLista(concepto,conceptosPago());if(enCat)I.concepto.value=enCat;else if(concepto)toast("Elige el concepto de la lista.");
-    const faltan=[!fecha&&"fecha",!valor&&"valor",!tercero&&"tercero",!enCat&&"concepto"].filter(Boolean);
+    /* el concepto es libre; si coincide con la lista oficial se escribe igual que en la lista */
+    const enCat=enLista(concepto,conceptosPago());if(enCat)I.concepto.value=enCat;
+    const faltan=[!fecha&&"fecha",!valor&&"valor",!tercero&&"tercero",!concepto&&"concepto"].filter(Boolean);
     ["fecha","valor","tercero","concepto"].forEach(k=>I[k].classList.toggle("falta",faltan.includes(k)));
     return faltan.length?"Falta: "+faltan.join(", "):null;
   };
@@ -743,8 +759,7 @@ function conceptoSinSoporte(m){
   const form=h("form",{class:"stack",onsubmit:async e=>{e.preventDefault();
     const concepto=I.concepto.value.trim(),fecha=m?m.fecha:I.fecha.value,valor=m?Math.abs(m.valor):Math.abs(parseMonto(I.valor.value)||0);
     const mal=t=>{msg.hidden=false;msg.textContent=t};
-    if(!concepto)return mal("Elige el concepto.");
-    if(!enLista(concepto,conceptosPago()))return mal("Elige el concepto de la lista. Si falta alguno, la administradora lo agrega en Informes de gerencia → Listas.");
+    if(!concepto)return mal("Escribe el concepto.");
     if(!fecha)return mal("Indica la fecha del pago.");
     if(!valor)return mal("Escribe el valor del pago.");
     btn.disabled=true;btn.textContent="Guardando…";
@@ -757,8 +772,8 @@ function conceptoSinSoporte(m){
     m?null:h("div",{class:"row",style:"flex-wrap:nowrap"},
       h("label",{class:"f",style:"flex:1"},h("span",null,"Fecha ",h("span",{class:"req"},"*")),I.fecha=h("input",{id:"cs-fecha",type:"date",value:hoy()})),
       h("label",{class:"f",style:"flex:1"},h("span",null,"Valor ",h("span",{class:"req"},"*")),I.valor=h("input",{id:"cs-valor",inputmode:"decimal",placeholder:"0"}))),
-    h("label",{class:"f"},h("span",null,"Concepto ",h("span",{class:"req"},"*")),I.concepto=h("input",{id:"cs-concepto",list:"dl-conceptos-cs",autocomplete:"off",placeholder:"Ej. Impuestos, Nómina, Servicios públicos"})),
     h("label",{class:"f"},"Tercero (opcional)",I.tercero=h("input",{id:"cs-tercero",list:"dl-terceros-cs",autocomplete:"off",placeholder:"A quién se le pagó, si lo sabes",onchange:()=>{if(!I.nit.value)I.nit.value=nitDe(I.tercero.value)}})),
+    h("label",{class:"f"},h("span",null,"Concepto ",h("span",{class:"req"},"*")),I.concepto=h("input",{id:"cs-concepto",list:"dl-conceptos-cs",autocomplete:"off",placeholder:"Elige de la lista oficial o escríbelo"}),I.pista=pistaConcepto(I.tercero,I.concepto)),
     h("label",{class:"f"},"NIT / C.C. (opcional)",I.nit=h("input",{id:"cs-nit",autocomplete:"off"})),
     h("label",{class:"f"},"Detalle (opcional)",I.detalle=h("input",{id:"cs-detalle",autocomplete:"off",value:m?.desc||""})),
     datalist("dl-conceptos-cs",conceptos()),datalist("dl-terceros-cs",terceros()),msg,h("div",{class:"row"},btn));
