@@ -1353,6 +1353,37 @@ function imprimirInforme(titulo,sub,filas,negrita,apaisado){
   w.document.open();w.document.write(`<!doctype html><html lang="es"><head><meta charset="utf-8"><title>${escT(titulo)}</title><style>@page{size:letter ${apaisado?"landscape":"portrait"};margin:1.2cm}body{font:${apaisado?"7pt":"8.5pt"}/1.3 Arial,Helvetica,sans-serif;color:#000;margin:0}h1{font-size:12pt;margin:0;text-align:center}p{margin:2pt 0 8pt;text-align:center}table{border-collapse:collapse;width:100%}td,th{border:1px solid #888;padding:2pt 4pt;text-align:left}td.v,th.v{text-align:right;white-space:nowrap}tr.g td{font-weight:bold;background:#eee}th{background:#ddd}</style></head><body><h1>${escT(nombreEmpresaAct())}</h1><p><strong>${escT(titulo)}</strong><br>${escT(sub)}</p><table>${cuerpo}</table></body></html>`);
   w.document.close();setTimeout(()=>{try{w.focus();w.print()}catch(e){}},400);
 }
+/* Lista editable de registros: fecha, valor, línea del banco, tercero y concepto, con «Guardar» por fila.
+   items: [{rec, m}] (m = movimiento del banco si ya se conoce). sinRegistro: [{m}] movimientos del banco aún sin clasificar. */
+function editarRegistros(tipo,titulo,ayuda,items,alGuardar,sinRegistro){
+  const col=tipo==="pago"?"pagos":"ingresos",campo=tipo==="pago"?"concepto":"descripcion",lCampo=tipo==="pago"?"Concepto":"A qué corresponde";
+  const lista=tipo==="pago"?conceptosPago():cat().ingresos,dl="dl-rec-"+tipo;
+  const mDe=new Map(items.map(x=>[x.rec.id,x.m]));
+  const movDe=r=>mDe.get(r.id)||(()=>{const id=S.conc.recMov.get(r.id)||r.movId;return id?S.movs.find(x=>x.id===id):null})();
+  const filas=items.map(x=>x.rec).sort((a,b)=>String(a.fecha).localeCompare(String(b.fecha))).map(r=>{
+    const iT=h("input",{value:r.tercero||"","aria-label":"Tercero",style:"min-width:180px"}),iC=h("input",{value:r[campo]||"",list:dl,"aria-label":lCampo,style:"min-width:200px"});
+    const est=h("span",{class:"small muted"});const m=movDe(r);
+    const guardar=h("button",{class:"sm pri",onclick:async()=>{
+      const t=iT.value.trim(),c0=iC.value.trim(),c=enLista(c0,lista)||c0;if(!c){est.textContent="Escribe el concepto.";return}
+      const cambios=[];if(t!==(r.tercero||""))cambios.push({campo:"Tercero",antes:r.tercero||"",despues:t});if(c!==(r[campo]||""))cambios.push({campo:lCampo,antes:r[campo]||"",despues:c});
+      if(!cambios.length){est.textContent="Sin cambios.";return}
+      guardar.disabled=true;est.textContent="Guardando…";
+      try{const ref=S.db.doc(`${col}/${r.id}`);const s=await ref.get();const act=s.data()||r;
+        const hist=[...(act.historial||[]),{at:nowISO(),by:S.uid,accion:"Modificado",cambios}];
+        const cambio={tercero:t,[campo]:c,...(c!==(act[campo]||"")&&!act.conceptoOriginal&&act[campo]?{conceptoOriginal:act[campo]}:{}),updatedBy:S.uid,updatedAt:nowISO(),historial:hist};
+        await ref.update(cambio);Object.assign(r,cambio);
+        registrarActividad(`Modificó ${tipo}`,`${t||"Sin tercero"} · ${cambios.map(x=>x.campo).join(", ")}`,{ref:r.id});
+        est.textContent=enLista(c,lista)?"Guardado con el concepto oficial.":"Guardado.";guardar.disabled=false;if(alGuardar)alGuardar()}
+      catch(e){est.textContent="No se pudo guardar.";guardar.disabled=false}}},"Guardar");
+    return h("tr",null,h("td",{style:"white-space:nowrap"},fmtF(r.fecha)),h("td",{class:"v"},fmt(r.valor)),
+      h("td",{class:"small",style:"white-space:normal;max-width:240px"},m?`${fmtF(m.fecha)} · ${m.desc||"—"}${m.ref?" · "+m.ref:""}`:h("span",{class:"muted"},"No cruzado con el banco"),r.detalle?h("div",{class:"muted"},"Detalle: "+r.detalle):null,notaOrig(r)),
+      h("td",null,iT),h("td",null,iC),h("td",null,h("div",{class:"stack",style:"gap:4px"},guardar,est)))});
+  const pend=(sinRegistro||[]).sort((a,b)=>a.m.fecha.localeCompare(b.m.fecha)).map(({m})=>h("tr",null,h("td",{style:"white-space:nowrap"},fmtF(m.fecha)),h("td",{class:"v"},fmt(Math.abs(m.valor))),
+    h("td",{class:"small",style:"white-space:normal;max-width:240px"},`${m.desc||"—"}${m.ref?" · "+m.ref:""}`),h("td",{colspan:"2",class:"small muted"},"Sin clasificar todavía"),
+    h("td",null,tipo==="pago"?h("button",{class:"sm",onclick:()=>conceptoSinSoporte(m)},"Asignar concepto"):h("span",{class:"small muted"},"Clasifícalo en Ingresos"))));
+  abrirModal(titulo,h("div",{class:"stack"},h("p",{class:"small muted",style:"margin:0"},ayuda),datalist(dl,lista),
+    h("div",{class:"tbl",style:"max-height:65vh;overflow:auto"},h("table",null,h("thead",null,h("tr",null,h("th",null,"Fecha"),h("th",{class:"v"},"Valor"),h("th",null,"Banco"),h("th",null,"Tercero"),h("th",null,lCampo),h("th",null,""))),h("tbody",null,filas,pend)))),{ancho:1100});
+}
 VIEWS.reportes={modo:"mensual",
   mount(el){this.box=h("div",{class:"stack"});this.modos=h("div",{class:"filters"});this.listasOk=false;el.append(this.modos,this.box)},
   refresh(){
@@ -1365,7 +1396,7 @@ VIEWS.reportes={modo:"mensual",
   /* Base de los informes: los movimientos del banco del mes, cada uno con el concepto de su pago o ingreso.
      Lo que aún no está clasificado sale como PENDIENTE POR IDENTIFICAR, así los totales siempre cuadran con el banco. */
   base(mes){
-    const C=cat(),lp=conceptosPago(),ing=new Map(),pag=new Map(),cli=new Map(),det=new Map();let pend=0;
+    const C=cat(),lp=conceptosPago(),ing=new Map(),pag=new Map(),cli=new Map(),det=new Map(),dIng=new Map(),dPag=new Map();let pend=0;
     const add=(M,k,v)=>{const key=norm(k),x=M.get(key)||{k,v:0};x.v+=v;M.set(key,x)};
     /* mes anterior a la app: sin banco cargado, se usan las cifras del informe que ya existía */
     const H=C.historico[mes];
@@ -1377,11 +1408,12 @@ VIEWS.reportes={modo:"mensual",
       return {ing,pag,cli,pend:0,totIng:tot(ing),totPag:tot(pag),hist:H.fuente||"informe anterior"};
     }
     for(const m of S.movs){if(m.mes!==mes)continue;const x=S.conc.byMov.get(m.id),v=Math.abs(m.valor);if(!x)pend++;
-      if(m.valor>0){const k=x?(enLista(x.rec.descripcion,C.ingresos)||String(x.rec.descripcion||"SIN CONCEPTO").toUpperCase()):"PENDIENTE POR IDENTIFICAR";add(ing,k,v);
+      const it={m,rec:x?.rec||null},pon=(D,k)=>{const kk=norm(k);(D.get(kk)||D.set(kk,[]).get(kk)).push(it)};
+      if(m.valor>0){const k=x?(enLista(x.rec.descripcion,C.ingresos)||String(x.rec.descripcion||"SIN CONCEPTO").toUpperCase()):"PENDIENTE POR IDENTIFICAR";add(ing,k,v);pon(dIng,k);
         const kc=norm(k+"|"+(x?clienteDe(x.rec.tercero):"DIRECTOS"));add(cli,k+"|"+(x?clienteDe(x.rec.tercero):"DIRECTOS"),v);(det.get(kc)||det.set(kc,[]).get(kc)).push({m,rec:x?.rec||null})}
-      else add(pag,x?(enLista(x.rec.concepto,lp)||String(x.rec.concepto||"SIN CONCEPTO").toUpperCase()):"PENDIENTE POR IDENTIFICAR",v)}
+      else{const k=x?(enLista(x.rec.concepto,lp)||String(x.rec.concepto||"SIN CONCEPTO").toUpperCase()):"PENDIENTE POR IDENTIFICAR";add(pag,k,v);pon(dPag,k)}}
     const tot=M=>[...M.values()].reduce((s,x)=>s+x.v,0);
-    return {ing,pag,cli,det,pend,totIng:tot(ing),totPag:tot(pag)};
+    return {ing,pag,cli,det,dIng,dPag,pend,totIng:tot(ing),totPag:tot(pag)};
   },
   filas(a,b){
     const C=cat(),val=(M,k)=>M.get(norm(k))?.v||0,s=(fs,i)=>fs.reduce((t,f)=>t+f[i],0);
@@ -1400,6 +1432,13 @@ VIEWS.reportes={modo:"mensual",
     if(this.saldoKey!==key){this.saldoKey=key;this.saldoA=undefined;saldoAnterior(A).then(v=>{if(this.saldoKey!==key)return;this.saldoA=v;if(S.view===this&&this.modo==="mensual")this.pintarMensual()}).catch(()=>{if(this.saldoKey===key)this.saldoA=null})}
     const sA=this.saldoA,hay=typeof sA==="number",sB=hay?sA+a.totIng-a.totPag:null,fin=hay?sB+b.totIng-b.totPag:null;
     const n=v=>v?numR.format(v):"-",td=v=>h("td",{class:"v"},n(v)),th=v=>h("th",{class:"v"},n(v));
+    /* la administradora puede tocar cualquier valor para ver y corregir los registros que lo forman */
+    const usadosP=new Set(cat().pagos.flatMap(g=>g.c?.length?g.c:[g.g]).map(norm));
+    const clavesPago=x=>{if(!x.g)return [x.r[0]];const g=cat().pagos.find(y=>y.g===x.r[0]);if(g)return g.c?.length?g.c:[g.g];
+      if(x.r[0]==="CONCEPTOS FUERA DE LA LISTA")return [...new Set([...a.dPag.keys(),...b.dPag.keys()])].filter(k=>!usadosP.has(k));return []};
+    const celda=(tipo,etq,claves,base,mes,v,neg)=>{const D=tipo==="pago"?base.dPag:base.dIng;const items=esAdmin()&&v&&D?claves.flatMap(k=>D.get(norm(k))||[]):[];
+      return h("td",{class:"v",style:(neg?"font-weight:700;":"")+(items.length?"cursor:pointer;text-decoration:underline dotted":""),title:items.length?"Ver y corregir los registros":null,
+        onclick:items.length?()=>this.detalleConcepto(tipo,etq,mes,items):null},n(v))};
     const kpi=(lab,val,sub,c)=>h("div",{class:"kpi"},h("span",{class:"lab"},lab),h("span",{class:"val "+(c||"")},val),h("span",{class:"sub"},sub));
     /* matriz para Excel e impresión, con el mismo orden del informe */
     const filas=[["INGRESOS",nA,nB,"","PAGOS",nA,nB],["SALDO ANTERIOR",hay?sA:"",hay?sB:"","","","",""]],neg=new Set([1]);
@@ -1420,9 +1459,9 @@ VIEWS.reportes={modo:"mensual",
       ...[[a,nA],[b,nB]].filter(([x])=>x.hist).map(([x,nm])=>h("div",{class:"status info"},`Las cifras de ${nm} vienen del ${x.hist}: ese mes no tiene extracto del banco cargado en la app.`)),      h("div",{class:"kpis"},kpi("Saldo anterior",hay?fmt(sB):"—","al empezar "+mesNombre(B).toLowerCase()),kpi("Ingresos",fmt(b.totIng),nA+": "+fmt(a.totIng),"pos"),kpi("Pagos",fmt(b.totPag),nA+": "+fmt(a.totPag),"neg"),kpi("Saldo final",hay?fmt(fin):"—","al cerrar "+mesNombre(B).toLowerCase())),
       h("div",{class:"grid2",style:"grid-template-columns:repeat(auto-fit,minmax(340px,1fr))"},
         h("div",{class:"card"},h("div",{class:"tbl"},h("table",null,h("thead",null,h("tr",null,h("th",null,"Ingresos"),h("th",{class:"v"},nA),h("th",{class:"v"},nB))),
-          h("tbody",null,F.ing.map(r=>h("tr",null,h("td",null,r[0]),td(r[1]),td(r[2])))),h("tfoot",null,h("tr",null,h("th",null,"Total ingresos"),th(a.totIng),th(b.totIng)))))),
+          h("tbody",null,F.ing.map(r=>h("tr",null,h("td",null,r[0]),celda("ingreso",r[0],[r[0]],a,A,r[1]),celda("ingreso",r[0],[r[0]],b,B,r[2])))),h("tfoot",null,h("tr",null,h("th",null,"Total ingresos"),th(a.totIng),th(b.totIng)))))),
         h("div",{class:"card"},h("div",{class:"tbl"},h("table",null,h("thead",null,h("tr",null,h("th",null,"Pagos"),h("th",{class:"v"},nA),h("th",{class:"v"},nB))),
-          h("tbody",null,F.pag.map(x=>h("tr",null,h("td",{style:x.g?"font-weight:700":"padding-left:26px"},x.r[0]),h("td",{class:"v",style:x.g?"font-weight:700":null},n(x.r[1])),h("td",{class:"v",style:x.g?"font-weight:700":null},n(x.r[2]))))),
+          h("tbody",null,F.pag.map(x=>{const ks=clavesPago(x);return h("tr",null,h("td",{style:x.g?"font-weight:700":"padding-left:26px"},x.r[0]),celda("pago",x.r[0],ks,a,A,x.r[1],x.g),celda("pago",x.r[0],ks,b,B,x.r[2],x.g))})),
           h("tfoot",null,h("tr",null,h("th",null,"Total pagos"),th(a.totPag),th(b.totPag))))))));
     if(esAdmin())this.box.append(this.fueraBox||(this.fueraBox=this.panelFuera()));
   },
@@ -1466,39 +1505,22 @@ VIEWS.reportes={modo:"mensual",
           const ver=h("button",{class:"sm",onclick:()=>verRegistros(tipo,g)},"Ver registros");
           return h("tr",null,h("td",{style:"white-space:normal;max-width:320px"},g.k,sug?h("div",{class:"small muted"},"Sugerido: "+sug):null),h("td",{class:"v"},String(g.n)),h("td",{class:"v"},fmt(g.t)),h("td",null,sel),h("td",null,h("div",{class:"row",style:"gap:6px;flex-wrap:nowrap"},ver,btn)))}))))};
     /* Ver uno por uno los registros de un texto: su tercero y la línea del banco, y corregir tercero y concepto antes de reclasificar */
-    const verRegistros=(tipo,g)=>{
-      const col=tipo==="pago"?"pagos":"ingresos",campo=tipo==="pago"?"concepto":"descripcion",lCampo=tipo==="pago"?"Concepto":"A qué corresponde";
-      const lista=tipo==="pago"?conceptosPago():cat().ingresos,dl="dl-rec-"+tipo;
-      const movDe=r=>{const id=S.conc.recMov.get(r.id)||r.movId;return id?S.movs.find(x=>x.id===id):null};
-      const filas=[...g.recs].sort((a,b)=>String(a.fecha).localeCompare(String(b.fecha))).map(r=>{
-        const iT=h("input",{value:r.tercero||"","aria-label":"Tercero",style:"min-width:180px"}),iC=h("input",{value:r[campo]||"",list:dl,"aria-label":lCampo,style:"min-width:200px"});
-        const est=h("span",{class:"small muted"});const m=movDe(r);
-        const guardar=h("button",{class:"sm pri",onclick:async()=>{
-          const t=iT.value.trim(),c0=iC.value.trim(),c=enLista(c0,lista)||c0;if(!c){est.textContent="Escribe el concepto.";return}
-          const cambios=[];if(t!==(r.tercero||""))cambios.push({campo:"Tercero",antes:r.tercero||"",despues:t});if(c!==(r[campo]||""))cambios.push({campo:lCampo,antes:r[campo]||"",despues:c});
-          if(!cambios.length){est.textContent="Sin cambios.";return}
-          guardar.disabled=true;est.textContent="Guardando…";
-          try{const ref=S.db.doc(`${col}/${r.id}`);const s=await ref.get();const act=s.data()||r;
-            const hist=[...(act.historial||[]),{at:nowISO(),by:S.uid,accion:"Modificado",cambios}];
-            const cambio={tercero:t,[campo]:c,...(c!==(act[campo]||"")&&!act.conceptoOriginal&&act[campo]?{conceptoOriginal:act[campo]}:{}),updatedBy:S.uid,updatedAt:nowISO(),historial:hist};
-            await ref.update(cambio);Object.assign(r,cambio);
-            registrarActividad(`Modificó ${tipo}`,`${t||"Sin tercero"} · ${cambios.map(x=>x.campo).join(", ")}`,{ref:r.id});
-            est.textContent=enLista(c,lista)?"Guardado con el concepto oficial.":"Guardado.";guardar.disabled=false;cargar()}
-          catch(e){est.textContent="No se pudo guardar.";guardar.disabled=false}}},"Guardar");
-        return h("tr",null,h("td",{style:"white-space:nowrap"},fmtF(r.fecha)),h("td",{class:"v"},fmt(r.valor)),
-          h("td",{class:"small",style:"white-space:normal;max-width:240px"},m?`${fmtF(m.fecha)} · ${m.desc||"—"}${m.ref?" · "+m.ref:""}`:h("span",{class:"muted"},"No cruzado con el banco"),r.detalle?h("div",{class:"muted"},"Detalle: "+r.detalle):null),
-          h("td",null,iT),h("td",null,iC),h("td",null,h("div",{class:"stack",style:"gap:4px"},guardar,est)))});
-      abrirModal(`Registros escritos como «${g.k}»`,h("div",{class:"stack"},
-        h("p",{class:"small muted",style:"margin:0"},"Revisa la línea del banco de cada registro, corrige el tercero y el concepto, y presiona «Guardar» en esa fila. Si eliges un concepto de la lista oficial, sale de «fuera de la lista»; el texto anterior queda como observación en el registro."),
-        datalist(dl,lista),
-        h("div",{class:"tbl",style:"max-height:65vh;overflow:auto"},h("table",null,h("thead",null,h("tr",null,h("th",null,"Fecha"),h("th",{class:"v"},"Valor"),h("th",null,"Banco"),h("th",null,"Tercero"),h("th",null,lCampo),h("th",null,""))),h("tbody",null,filas)))),{ancho:1100});
-    };
+    const verRegistros=(tipo,g)=>editarRegistros(tipo,`Registros escritos como «${g.k}»`,
+      "Revisa la línea del banco de cada registro, corrige el tercero y el concepto, y presiona «Guardar» en esa fila. Si eliges un concepto de la lista oficial, sale de «fuera de la lista»; el texto anterior queda como observación en el registro.",
+      g.recs.map(r=>({rec:r,m:null})),cargar);
     const pintar=(fp,fi)=>box.replaceChildren(
       h("div",{class:"row between"},h("h3",{style:"margin:0"},`Conceptos fuera de la lista · ${fp.length+fi.length}`),h("button",{class:"sm",onclick:cargar},"Actualizar")),
       h("div",{class:"small muted"},"Son textos escritos a mano que no coinciden con la lista. Elige a qué concepto corresponde cada uno y presiona «Reclasificar»: cambian todos los registros con ese texto, de cualquier mes, y queda la huella en el historial de cada uno. La app propone uno cuando lo reconoce; revísalo antes de aplicar."),
       h("h4",{style:"margin:6px 0 0"},`Pagos (${fp.length})`),tabla("pago",fp),
       h("h4",{style:"margin:6px 0 0"},`Ingresos (${fi.length})`),tabla("ingreso",fi));
     cargar();return box;
+  },
+  /* Tocar un valor del informe mensual: ver qué registros lo forman y corregirlos (solo la administradora) */
+  detalleConcepto(tipo,concepto,mes,items){
+    const conR=items.filter(x=>x.rec),sinR=items.filter(x=>!x.rec);
+    editarRegistros(tipo,`${concepto} · ${mesNombre(mes)}`,
+      `${items.length} movimientos del banco suman ${fmt(items.reduce((s,x)=>s+Math.abs(x.m.valor),0))}. Revisa cada uno; si alguno no corresponde a «${concepto}», cámbiale el concepto (o el tercero) y presiona «Guardar». El informe se actualiza solo y el texto anterior queda como observación.`,
+      conR,null,sinR);
   },
   pintarClientes(){
     const C=cat(),b=this.base(S.mes),cols=["DIRECTOS",...C.clientes.map(c=>c.n)],enCat=new Set(C.ingresos.map(norm));
