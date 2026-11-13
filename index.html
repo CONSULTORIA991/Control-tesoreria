@@ -1177,7 +1177,7 @@ VIEWS.banco={
     const fileIn=h("input",{type:"file",id:"b-file",accept:".csv,.txt,.xlsx,.xls,text/csv",onchange:()=>this.leer(fileIn.files[0])});
     this.cargas=h("div");this.movs=h("div");this.resumenCarga=h("div");
     el.append(this.resumenCarga,h("div",{class:"card"},h("h2",null,"Cargar movimientos del banco"),
-      h("p",{class:"muted small",style:"margin:0 0 10px"},"Sube el extracto o el archivo de movimientos que descargas del banco (Excel o CSV). Puedes subir el mismo periodo varias veces: los movimientos repetidos se detectan y no se duplican."),
+      h("p",{class:"muted small",style:"margin:0 0 10px"},"Sube el archivo de movimientos que descargas del banco (CSV o Excel). Si vuelves a subir fechas que ya habías cargado, la app solo toma lo que falta: nada se duplica. Las columnas del CSV se recuerdan para la próxima vez."),
       h("div",{class:"drop"},h("label",{class:"f",for:"b-file"},"Archivo del banco",fileIn)),this.area),
       h("div",{class:"card"},h("h3",{id:"bc"},"Cargas"),this.cargas),
       h("div",{class:"card"},h("h3",{id:"bm"},"Movimientos"),this.movs));
@@ -1209,6 +1209,25 @@ VIEWS.banco={
     if(m.valor<0&&!(m.debito>=0&&m.credito>=0)){for(let i=ncol-1;i>=0;i--){if(i===m.fecha)continue;if(muestra.filter(r=>parseMonto(r[i])!=null&&String(r[i]).trim()!=="").length>muestra.length/2){m.valor=i;break}}}
     if(m.desc<0)m.desc=st.headers.findIndex((_,i)=>i!==m.fecha&&i!==m.valor&&muestra.filter(r=>/[a-z]{3}/i.test(String(r[i]))).length>muestra.length/2);
     st.map=m;st.modo=(m.debito>=0&&m.credito>=0&&m.valor<0)?"dc":"valor";if(m.debito>=0&&m.credito>=0&&m.valor>=0)st.modo="dc";
+    st.recordado=false;st.incluir=new Set();
+    try{const g=JSON.parse(localStorage.getItem(this.claveMapa())||"null");
+      if(g&&g.map&&Object.values(g.map).every(i=>i<ncol)){st.map={...m,...g.map};st.modo=g.modo||st.modo;st.invertir=!!g.invertir;st.recordado=true}}catch(_){}
+  },
+  claveMapa(){return "tes-banco-mapa:"+hash(this.st.headers.join("|"))},
+  recordarMapa(){try{const st=this.st;localStorage.setItem(this.claveMapa(),JSON.stringify({map:st.map,modo:st.modo,invertir:st.invertir}))}catch(_){}},
+  /* Compara lo del archivo con lo ya cargado: 1) mismo movimiento exacto, 2) misma fecha y valor con descripción o referencia equivalente
+     (el banco a veces cambia espacios, ceros o signos entre CSV y Excel), 3) misma fecha y valor con texto distinto = posible repetido. */
+  clasificar(buenos,exist){
+    const sD=s=>norm(s).replace(/[^a-z0-9]/g,""),sR=s=>sD(s).replace(/^0+/,"");
+    const porId=new Set(exist.map(e=>e.id)),usados=new Set(),fechas=new Set(buenos.map(m=>m.fecha)),res=new Map();
+    const libres=exist.filter(e=>fechas.has(e.fecha));
+    for(const m of buenos)if(porId.has(m.id)){res.set(m,"dup");usados.add(m.id)}
+    const tomar=(m,ok)=>{const e=libres.find(e=>!usados.has(e.id)&&e.fecha===m.fecha&&Math.abs(Number(e.valor)-m.valor)<0.005&&ok(e));if(e){usados.add(e.id);return e}return null};
+    for(const m of buenos){if(res.has(m))continue;const d=sD(m.desc),r=sR(m.ref);
+      if(tomar(m,e=>(d&&sD(e.desc)===d)||(r&&sR(e.ref)===r)||(d&&sD(e.desc)&&(sD(e.desc).includes(d)||d.includes(sD(e.desc))))))res.set(m,"dup")}
+    for(const m of buenos){if(res.has(m))continue;const e=tomar(m,()=>true);if(e){res.set(m,"posible");m.parecido=e}}
+    for(const m of buenos)if(!res.has(m))res.set(m,"nuevo");
+    return res;
   },
   construir(){
     const st=this.st,m=st.map,out=[];
@@ -1236,21 +1255,36 @@ VIEWS.banco={
   },
   async pintarPrevia(){
     const movs=this.construir(),buenos=movs.filter(m=>m.ok);
-    const meses=uniq(buenos.map(m=>m.fecha.slice(0,7)));
-    let existentes=new Set(S.movs.map(m=>m.id));
+    const meses=uniq(buenos.map(m=>m.fecha.slice(0,7))),st=this.st;
+    const exist=S.movs.filter(m=>meses.includes(String(m.fecha).slice(0,7)));
     const faltan=meses.filter(m=>![addMes(S.mes,-1),S.mes,addMes(S.mes,1)].includes(m));
-    if(faltan.length){try{const snap=await S.db.collection("banco").where("mes","in",faltan.slice(0,30)).get();snap.docs.forEach(d=>(d.data().movs||[]).forEach(x=>existentes.add(x.id)))}catch(e){}}
-    const nuevos=buenos.filter(m=>!existentes.has(m.id)),dup=buenos.length-nuevos.length,mal=movs.length-buenos.length;
-    const btn=h("button",{class:"pri",disabled:nuevos.length?null:true,onclick:()=>this.importar(nuevos,btn)},nuevos.length?`Importar ${nuevos.length} movimientos nuevos`:"No hay movimientos nuevos");
+    if(faltan.length){try{for(let i=0;i<faltan.length;i+=30){const snap=await S.db.collection("banco").where("mes","in",faltan.slice(i,i+30)).get();snap.docs.forEach(d=>exist.push(...(d.data().movs||[])))}}
+      catch(e){this.previa.replaceChildren(h("div",{class:"status bad"},"No pude revisar lo que ya está cargado de esos meses. Intenta de nuevo para no duplicar."));return}}
+    const cls=this.clasificar(buenos,exist);
+    const de=t=>buenos.filter(m=>cls.get(m)===t),dupL=de("dup"),posL=de("posible");
+    const nuevos=buenos.filter(m=>cls.get(m)==="nuevo"||(cls.get(m)==="posible"&&st.incluir.has(m.id)));
+    const mal=movs.length-buenos.length,fs=buenos.map(m=>m.fecha).sort();
+    const btn=h("button",{class:"pri",disabled:nuevos.length?null:true,onclick:()=>this.importar(nuevos,btn)},nuevos.length?`Importar ${nuevos.length} movimientos que faltan`:"No falta nada: todo ya estaba cargado");
     const sumE=nuevos.filter(m=>m.valor<0).reduce((s,m)=>s+m.valor,0),sumI=nuevos.filter(m=>m.valor>0).reduce((s,m)=>s+m.valor,0);
-    this.previa.replaceChildren(
-      h("div",{class:"row small"},h("span",{class:"chip ok"},`${nuevos.length} nuevos`),dup?h("span",{class:"chip neu"},`${dup} ya cargados`):null,mal?h("span",{class:"chip warn"},`${mal} filas sin fecha o valor (se omiten)`):null,
-        h("span",{class:"muted"},`Entradas ${fmt(sumI)} · Salidas ${fmt(sumE)}`)),
+    const estado=m=>{if(!m.ok)return h("span",{class:"chip warn"},"Omitida");const c=cls.get(m);
+      if(c==="dup")return h("span",{class:"chip neu"},"Ya cargado");
+      if(c==="posible")return h("label",{class:"row small",style:"gap:4px;flex-wrap:nowrap",title:`Ya hay un movimiento del ${fmtF(m.parecido.fecha)} por ${fmt(m.parecido.valor)}: «${m.parecido.desc||""}${m.parecido.ref?" · "+m.parecido.ref:""}»`},
+        h("input",{type:"checkbox",checked:st.incluir.has(m.id)?true:null,onchange:e=>{e.target.checked?st.incluir.add(m.id):st.incluir.delete(m.id);this.pintarPrevia()}}),h("span",{class:"chip warn"},"¿Repetido? Incluir"));
+      return h("span",{class:"chip ok"},"Falta · se carga")};
+    const orden={nuevo:0,posible:1,dup:2};
+    const vista=[...movs].sort((a,b)=>(a.ok?orden[cls.get(a)]:3)-(b.ok?orden[cls.get(b)]:3));
+    this.previa.replaceChildren(...[
+      st.recordado?h("div",{class:"status info small"},"Usé las mismas columnas de la última vez que subiste un archivo con este formato. Si algo no cuadra, cámbialas arriba."):null,
+      fs.length?h("div",{class:"small muted"},`El archivo va del ${fmtF(fs[0])} al ${fmtF(fs.at(-1))}. Solo se carga lo que falta; lo que ya estaba no se vuelve a subir.`):null,
+      h("div",{class:"row small"},h("span",{class:"chip ok"},`${de("nuevo").length} faltan`),dupL.length?h("span",{class:"chip neu"},`${dupL.length} ya cargados (se omiten)`):null,
+        posL.length?h("span",{class:"chip warn"},`${posL.length} posibles repetidos (no se cargan salvo que los marques)`):null,mal?h("span",{class:"chip warn"},`${mal} filas sin fecha o valor (se omiten)`):null,
+        h("span",{class:"muted"},`A cargar: entradas ${fmt(sumI)} · salidas ${fmt(sumE)}`)),
+      posL.length?h("div",{class:"status warn small"},"«Posible repetido»: ya hay un movimiento cargado con la misma fecha y el mismo valor, pero con otro texto. Pasa el mouse para verlo; márcalo solo si de verdad es otro movimiento."):null,
       h("div",{class:"tbl",style:"max-height:340px;overflow:auto"},h("table",null,h("thead",null,h("tr",null,h("th",null,"Fecha"),h("th",null,"Descripción"),h("th",null,"Ref."),h("th",{class:"v"},"Valor"),h("th",null,""))),
-        h("tbody",null,movs.slice(0,200).map(m=>h("tr",null,h("td",null,m.fecha?fmtF(m.fecha):h("span",{class:"neg"},"?")),h("td",null,m.desc),h("td",null,m.ref),h("td",{class:"v "+(m.valor<0?"neg":"pos")},m.valor!=null?fmt(m.valor):"?"),
-          h("td",null,!m.ok?h("span",{class:"chip warn"},"Omitida"):existentes.has(m.id)?h("span",{class:"chip neu"},"Ya cargado"):h("span",{class:"chip ok"},"Nuevo"))))))),
-      movs.length>200?h("div",{class:"small muted"},`Se muestran 200 de ${movs.length} filas.`):null,
-      h("div",{class:"row"},btn));
+        h("tbody",null,vista.slice(0,300).map(m=>h("tr",null,h("td",null,m.fecha?fmtF(m.fecha):h("span",{class:"neg"},"?")),h("td",null,m.desc),h("td",null,m.ref),h("td",{class:"v "+(m.valor<0?"neg":"pos")},m.valor!=null?fmt(m.valor):"?"),
+          h("td",null,estado(m))))))),
+      vista.length>300?h("div",{class:"small muted"},`Se muestran 300 de ${vista.length} filas (primero las que faltan).`):null,
+      h("div",{class:"row"},btn)].filter(Boolean));
   },
   async importar(nuevos,btn){
     btn.disabled=true;btn.textContent="Importando…";
@@ -1260,7 +1294,7 @@ VIEWS.banco={
       for(const [mes,movs] of Object.entries(porMes)){
         for(let i=0;i<movs.length;i+=800){await S.db.doc(`banco/${mes}_${uploadId}_${i/800}`).set({mes,uploadId,archivo:this.st.archivo,creadoPor:S.uid,creadoEn:nowISO(),movs:movs.slice(i,i+800)})}
       }
-      const fechas=nuevos.map(m=>m.fecha).sort();
+      const fechas=nuevos.map(m=>m.fecha).sort();this.recordarMapa();
       registrarActividad("Cargó movimientos de banco",`${nuevos.length} movimientos (${fmtF(fechas[0])} a ${fmtF(fechas.at(-1))}) · ${this.st.archivo}`,{uploadId});
       toast(`Se importaron ${nuevos.length} movimientos.`);this.area.replaceChildren(h("div",{class:"status ok"},`Listo: ${nuevos.length} movimientos importados. Ya se están conciliando.`));$("#b-file").value="";
       S.ultimaCarga={ids:new Set(nuevos.map(m=>m.id)),archivo:this.st.archivo,at:nowISO()};
