@@ -791,6 +791,11 @@ function confirmarEnPagina(boton,texto,accion){
 /* ---------- detalle de registro ---------- */
 const CAMPOS={pago:[["fecha","Fecha del pago"],["valor","Valor"],["tercero","Tercero"],["nit","NIT / C.C."],["concepto","Concepto"],["detalle","Detalle"]],
   ingreso:[["fecha","Fecha"],["valor","Valor"],["tercero","Tercero"],["nit","NIT / C.C."],["descripcion","A qué corresponde"],["detalle","Detalle"]]};
+/* concepto con el que se registró antes de reclasificarlo: queda como observación; el concepto actual es el oficial del informe */
+function origDe(r){const actual=r.concepto||r.descripcion||"";
+  const o=r.conceptoOriginal||(r.historial||[]).find(x=>x.accion==="Reclasificado"||(x.cambios||[]).some(c=>["Concepto","A qué corresponde"].includes(c.campo)))?.cambios?.find(c=>["Concepto","A qué corresponde"].includes(c.campo))?.antes||"";
+  return o&&norm(o)!==norm(actual)?String(o):""}
+const notaOrig=r=>{const o=origDe(r);return o?h("div",{class:"small muted"},"Registrado como: "+o):null};
 function verRegistro(tipo,r){
   const movId=S.conc.recMov.get(r.id); const m=S.movs.find(x=>x.id===movId);
   const puedeEditar=esAdmin()||(r.createdBy===S.uid&&miRol()===(tipo==="pago"?"pagos":"ingresos"));
@@ -799,7 +804,8 @@ function verRegistro(tipo,r){
     cuerpo.replaceChildren(
       h("div",{class:"row"},r.anulado?h("span",{class:"chip bad"},"Anulado"):null,m?h("span",{class:"chip ok"},"En banco "+fmtF(m.fecha)):h("span",{class:"chip warn"},"Aún no aparece en banco"),
         r.ia?.tercero?h("span",{class:"chip info"},"Tercero leído del comprobante"):null),
-      h("dl",{class:"dl"},CAMPOS[tipo].flatMap(([k,l])=>[h("dt",null,l),h("dd",{class:k==="valor"?"money":null},k==="valor"?fmt(r[k]):k==="fecha"?fmtF(r[k]):(r[k]||"—"))]),
+      h("dl",{class:"dl"},CAMPOS[tipo].flatMap(([k,l])=>[h("dt",null,k==="concepto"||k==="descripcion"?l+" (oficial)":l),h("dd",{class:k==="valor"?"money":null},k==="valor"?fmt(r[k]):k==="fecha"?fmtF(r[k]):(r[k]||"—"))]),
+        origDe(r)?[h("dt",null,"Observación"),h("dd",null,`Se registró como «${origDe(r)}» y se reclasificó al concepto oficial.`)]:null,
         m?[h("dt",null,"Movimiento banco"),h("dd",null,`${fmtF(m.fecha)} · ${m.desc||"—"} · ${fmt(m.valor)}`)]:null,
         h("dt",null,"Registrado por"),h("dd",null,quien(r.createdBy)," · ",fmtFH(r.createdAt)),
         r.updatedAt&&r.updatedAt!==r.createdAt?[h("dt",null,"Última modificación"),h("dd",null,quien(r.updatedBy)," · ",fmtFH(r.updatedAt))]:null,
@@ -821,6 +827,7 @@ function verRegistro(tipo,r){
         if(String(v)!==String(r[k]??"")){nuevo[k]=v;cambios.push({campo:l,antes:k==="valor"?fmt(r[k]):r[k]??"",despues:k==="valor"?fmt(v):v})}}
       if(!cambios.length){pintar();return}
       if(nuevo.fecha)nuevo.mes=nuevo.fecha.slice(0,7);
+      const kc=tipo==="pago"?"concepto":"descripcion";if(kc in nuevo&&!r.conceptoOriginal&&r[kc])nuevo.conceptoOriginal=r[kc];
       const hist=[...(r.historial||[]),{at:nowISO(),by:S.uid,accion:"Modificado",cambios}];
       try{await S.db.doc(`${tipo==="pago"?"pagos":"ingresos"}/${r.id}`).update({...nuevo,updatedBy:S.uid,updatedAt:nowISO(),historial:hist});
         Object.assign(r,nuevo,{historial:hist,updatedBy:S.uid,updatedAt:nowISO()});
@@ -1031,7 +1038,7 @@ VIEWS.resumen={filtro:"todos",
     }
     return h("tr",{class:x?"click":null,onclick:x?()=>verRegistro(x.tipo,x.rec):null},h("td",null,fmtF(m.fecha)),h("td",null,m.desc||"—",m.ref?h("div",{class:"small muted"},"Ref. "+m.ref):null),
       h("td",{class:"v "+(m.valor<0?"neg":"pos")},fmt(m.valor)),h("td",null,estadoMov(m),x?.auto?h("div",{class:"small muted"},"automático"):null),
-      h("td",null,x?h("div",null,h("strong",null,x.rec.tercero),h("div",{class:"small muted"},x.rec.concepto||x.rec.descripcion)):"—"),esAdmin()?h("td",null,acc):null);
+      h("td",null,x?h("div",null,h("strong",null,x.rec.tercero),h("div",{class:"small muted"},x.rec.concepto||x.rec.descripcion),notaOrig(x.rec)):"—"),esAdmin()?h("td",null,acc):null);
   }
 };
 
@@ -1084,7 +1091,7 @@ VIEWS.pagos={busca:"",
     this.resumen.textContent=`${act.length} pagos · ${fmt(act.reduce((s,p)=>s+Number(p.valor),0))} · ${act.filter(p=>S.conc.recMov.has(p.id)).length} ya en banco`;
     if(!S.loaded.pagos)return this.lista.replaceChildren(tablaVacia("Cargando…"));
     this.lista.replaceChildren(l.length?h("div",{class:"tbl",style:"margin-top:10px"},h("table",null,h("thead",null,h("tr",null,h("th",null,"Fecha"),h("th",null,"Tercero"),h("th",null,"Concepto"),h("th",{class:"v"},"Valor"),h("th",null,"Banco"),h("th",null,"Subido por"))),
-      h("tbody",null,l.map(p=>h("tr",{class:"click",onclick:()=>verRegistro("pago",p)},h("td",null,fmtF(p.fecha)),h("td",null,p.tercero,p.ia?.tercero?h("div",{class:"small muted"},"leído del comprobante"):null),h("td",null,p.concepto),h("td",{class:"v"},fmt(p.valor)),
+      h("tbody",null,l.map(p=>h("tr",{class:"click",onclick:()=>verRegistro("pago",p)},h("td",null,fmtF(p.fecha)),h("td",null,p.tercero,p.ia?.tercero?h("div",{class:"small muted"},"leído del comprobante"):null),h("td",null,p.concepto,notaOrig(p)),h("td",{class:"v"},fmt(p.valor)),
         h("td",null,p.anulado?h("span",{class:"chip bad"},"Anulado"):S.conc.recMov.has(p.id)?h("span",{class:"chip ok"},"Conciliado"):h("span",{class:"chip neu"},"Pendiente")),h("td",{class:"small"},nombre(p.createdBy),h("div",{class:"muted"},fmtFH(p.createdAt))))))))
       :tablaVacia("Todavía no hay pagos registrados este mes. Sube los comprobantes arriba."));
   }
@@ -1141,7 +1148,7 @@ VIEWS.ingresos={
     const act=l.filter(p=>!p.anulado);
     this.resumen.textContent=`${act.length} ingresos · ${fmt(act.reduce((s,p)=>s+Number(p.valor),0))}`;
     this.lista.replaceChildren(l.length?h("div",{class:"tbl",style:"margin-top:10px"},h("table",null,h("thead",null,h("tr",null,h("th",null,"Fecha"),h("th",null,"Tercero"),h("th",null,"Corresponde a"),h("th",{class:"v"},"Valor"),h("th",null,"Banco"),h("th",null,"Registró"))),
-      h("tbody",null,l.map(p=>h("tr",{class:"click",onclick:()=>verRegistro("ingreso",p)},h("td",null,fmtF(p.fecha)),h("td",null,p.tercero),h("td",null,p.descripcion),h("td",{class:"v"},fmt(p.valor)),
+      h("tbody",null,l.map(p=>h("tr",{class:"click",onclick:()=>verRegistro("ingreso",p)},h("td",null,fmtF(p.fecha)),h("td",null,p.tercero),h("td",null,p.descripcion,notaOrig(p)),h("td",{class:"v"},fmt(p.valor)),
         h("td",null,p.anulado?h("span",{class:"chip bad"},"Anulado"):S.conc.recMov.has(p.id)?h("span",{class:"chip ok"},"Conciliado"):h("span",{class:"chip neu"},"Pendiente")),h("td",{class:"small"},nombre(p.createdBy),h("div",{class:"muted"},fmtFH(p.createdAt))))))))
       :tablaVacia("Todavía no hay ingresos registrados este mes."));
   }
@@ -1430,7 +1437,7 @@ VIEWS.reportes={modo:"mensual",
       try{
         const cola=[...g.ids];const w=async()=>{while(cola.length){const id=cola.shift();const ref=S.db.doc(`${col}/${id}`);const s=await ref.get();if(!s.exists)continue;const r=s.data();
           const hist=[...(r.historial||[]),{at:nowISO(),by:S.uid,accion:"Reclasificado",cambios:[{campo:"Concepto",antes:r[campo]||"",despues:destino}]}];
-          await ref.update({[campo]:destino,updatedBy:S.uid,updatedAt:nowISO(),historial:hist});n++;btn.textContent=`${n}/${g.ids.length}…`}};
+          await ref.update({[campo]:destino,...(r.conceptoOriginal?{}:{conceptoOriginal:r[campo]||""}),updatedBy:S.uid,updatedAt:nowISO(),historial:hist});n++;btn.textContent=`${n}/${g.ids.length}…`}};
         await Promise.all([w(),w(),w(),w()]);
         registrarActividad("Reclasificó concepto",`${g.k} → ${destino} · ${n} ${tipo==="pago"?"pagos":"ingresos"}`);toast(`Listo: ${n} registros pasaron a «${destino}».`);cargar();
       }catch(e){toast("No se pudo reclasificar todo. Revisa tu acceso e intenta de nuevo.");btn.disabled=false;btn.textContent="Reclasificar"}
@@ -1500,11 +1507,11 @@ VIEWS.reportes={modo:"mensual",
         h("tfoot",null,h("tr",null,h("th",null,"Total"),h("th",{class:"v"},String(filas.reduce((s,g)=>s+g.n,0))),h("th",{class:"v"},fmt(total)),h("th",null,""),h("th",null,""))))):tablaVacia("Sin datos este mes."))};
     const top=(list,n=10)=>agrupar(list,"tercero").slice(0,n);
     const kpi=(lab,val,sub,alert)=>h("div",{class:"kpi"+(alert?" alert":"")},h("span",{class:"lab"},lab),h("span",{class:"val"},val),h("span",{class:"sub"},sub));
-    const exportar=()=>{const filas=[["Tipo","Fecha","Tercero","NIT/CC","Concepto / A qué corresponde","Detalle","Valor","Estado banco","Fecha banco","Registrado por","Fecha registro"]];
-      for(const p of pag){const m=S.movs.find(x=>x.id===S.conc.recMov.get(p.id));filas.push(["Egreso",fmtF(p.fecha),p.tercero,p.nit,p.concepto,p.detalle,p.valor,m?"Conciliado":"No aparece en banco",m?fmtF(m.fecha):"",nombre(p.createdBy),fmtFH(p.createdAt)])}
-      for(const p of ing){const m=S.movs.find(x=>x.id===S.conc.recMov.get(p.id));filas.push(["Ingreso",fmtF(p.fecha),p.tercero,p.nit,p.descripcion,p.detalle,p.valor,m?"Conciliado":"No aparece en banco",m?fmtF(m.fecha):"",nombre(p.createdBy),fmtFH(p.createdAt)])}
-      for(const m of debSin)filas.push(["Egreso sin soporte",fmtF(m.fecha),"","",m.desc,m.ref,Math.abs(m.valor),"Falta soporte",fmtF(m.fecha),"",""]);
-      for(const m of creSin)filas.push(["Ingreso sin clasificar",fmtF(m.fecha),"","",m.desc,m.ref,m.valor,"Sin clasificar",fmtF(m.fecha),"",""]);
+    const exportar=()=>{const filas=[["Tipo","Fecha","Tercero","NIT/CC","Concepto oficial","Observación: registrado como","Detalle","Valor","Estado banco","Fecha banco","Registrado por","Fecha registro"]];
+      for(const p of pag){const m=S.movs.find(x=>x.id===S.conc.recMov.get(p.id));filas.push(["Egreso",fmtF(p.fecha),p.tercero,p.nit,p.concepto,origDe(p),p.detalle,p.valor,m?"Conciliado":"No aparece en banco",m?fmtF(m.fecha):"",nombre(p.createdBy),fmtFH(p.createdAt)])}
+      for(const p of ing){const m=S.movs.find(x=>x.id===S.conc.recMov.get(p.id));filas.push(["Ingreso",fmtF(p.fecha),p.tercero,p.nit,p.descripcion,origDe(p),p.detalle,p.valor,m?"Conciliado":"No aparece en banco",m?fmtF(m.fecha):"",nombre(p.createdBy),fmtFH(p.createdAt)])}
+      for(const m of debSin)filas.push(["Egreso sin soporte",fmtF(m.fecha),"","",m.desc,"",m.ref,Math.abs(m.valor),"Falta soporte",fmtF(m.fecha),"",""]);
+      for(const m of creSin)filas.push(["Ingreso sin clasificar",fmtF(m.fecha),"","",m.desc,"",m.ref,m.valor,"Sin clasificar",fmtF(m.fecha),"",""]);
       descargar(`reporte-tesoreria-${S.mes}.csv`,csv(filas))};
     this.box.replaceChildren(
       h("div",{class:"row between"},h("div",null,h("h2",null,"Informe de tesorería · "+mesNombre(S.mes)),h("div",{class:"small muted"},`Generado ${fmtFH(nowISO())} con la información registrada hasta ahora.`)),h("button",{class:"pri",onclick:exportar},"Descargar detalle (Excel/CSV)")),
