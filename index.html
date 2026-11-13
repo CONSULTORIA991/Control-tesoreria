@@ -1442,7 +1442,7 @@ VIEWS.reportes={modo:"mensual",
         const [ps,is]=await Promise.all([S.db.collection("pagos").get(),S.db.collection("ingresos").get()]);
         const C=cat(),lp=conceptosPago();
         const agrupar=(snap,campo,lista)=>{const M=new Map();for(const d of snap.docs){const r=d.data();if(!r||r.anulado||enLista(r[campo],lista))continue;
-          const key=norm(r[campo]);const g=M.get(key)||{k:String(r[campo]||"").trim()||"(sin concepto)",n:0,t:0,ids:[]};g.n++;g.t+=Math.abs(Number(r.valor)||0);g.ids.push(d.id);M.set(key,g)}
+          const key=norm(r[campo]);const g=M.get(key)||{k:String(r[campo]||"").trim()||"(sin concepto)",n:0,t:0,ids:[],recs:[]};g.n++;g.t+=Math.abs(Number(r.valor)||0);g.ids.push(d.id);g.recs.push({id:d.id,...r});M.set(key,g)}
           return [...M.values()].sort((x,y)=>y.t-x.t)};
         pintar(agrupar(ps,"concepto",lp),agrupar(is,"descripcion",C.ingresos));
       }catch(e){box.replaceChildren(h("h3",{style:"margin:0"},"Conceptos fuera de la lista"),h("div",{class:"status bad"},"No se pudieron buscar los registros."))}
@@ -1462,7 +1462,36 @@ VIEWS.reportes={modo:"mensual",
       return h("div",{class:"tbl",style:"max-height:560px;overflow:auto"},h("table",null,h("thead",null,h("tr",null,h("th",null,"Escrito como"),h("th",{class:"v"},"Registros"),h("th",{class:"v"},"Valor"),h("th",null,"Pasar a"),h("th",null,""))),
         h("tbody",null,grupos.map(g=>{const sug=sugerir(g.k,lista);const sel=h("select",{style:"min-width:220px","aria-label":"Concepto de la lista para "+g.k},opciones(tipo,sug));
           const btn=h("button",{class:"sm pri",onclick:e=>{const d=sel.value;if(!d){toast("Elige el concepto de la lista.");return}confirmarEnPagina(e.currentTarget,`Pasar ${g.n} a «${d}»`,()=>mover(tipo,g,d,btn))}},"Reclasificar");
-          return h("tr",null,h("td",{style:"white-space:normal;max-width:320px"},g.k,sug?h("div",{class:"small muted"},"Sugerido: "+sug):null),h("td",{class:"v"},String(g.n)),h("td",{class:"v"},fmt(g.t)),h("td",null,sel),h("td",null,btn))}))))};
+          const ver=h("button",{class:"sm",onclick:()=>verRegistros(tipo,g)},"Ver registros");
+          return h("tr",null,h("td",{style:"white-space:normal;max-width:320px"},g.k,sug?h("div",{class:"small muted"},"Sugerido: "+sug):null),h("td",{class:"v"},String(g.n)),h("td",{class:"v"},fmt(g.t)),h("td",null,sel),h("td",null,h("div",{class:"row",style:"gap:6px;flex-wrap:nowrap"},ver,btn)))}))))};
+    /* Ver uno por uno los registros de un texto: su tercero y la línea del banco, y corregir tercero y concepto antes de reclasificar */
+    const verRegistros=(tipo,g)=>{
+      const col=tipo==="pago"?"pagos":"ingresos",campo=tipo==="pago"?"concepto":"descripcion",lCampo=tipo==="pago"?"Concepto":"A qué corresponde";
+      const lista=tipo==="pago"?conceptosPago():cat().ingresos,dl="dl-rec-"+tipo;
+      const movDe=r=>{const id=S.conc.recMov.get(r.id)||r.movId;return id?S.movs.find(x=>x.id===id):null};
+      const filas=[...g.recs].sort((a,b)=>String(a.fecha).localeCompare(String(b.fecha))).map(r=>{
+        const iT=h("input",{value:r.tercero||"","aria-label":"Tercero",style:"min-width:180px"}),iC=h("input",{value:r[campo]||"",list:dl,"aria-label":lCampo,style:"min-width:200px"});
+        const est=h("span",{class:"small muted"});const m=movDe(r);
+        const guardar=h("button",{class:"sm pri",onclick:async()=>{
+          const t=iT.value.trim(),c0=iC.value.trim(),c=enLista(c0,lista)||c0;if(!c){est.textContent="Escribe el concepto.";return}
+          const cambios=[];if(t!==(r.tercero||""))cambios.push({campo:"Tercero",antes:r.tercero||"",despues:t});if(c!==(r[campo]||""))cambios.push({campo:lCampo,antes:r[campo]||"",despues:c});
+          if(!cambios.length){est.textContent="Sin cambios.";return}
+          guardar.disabled=true;est.textContent="Guardando…";
+          try{const ref=S.db.doc(`${col}/${r.id}`);const s=await ref.get();const act=s.data()||r;
+            const hist=[...(act.historial||[]),{at:nowISO(),by:S.uid,accion:"Modificado",cambios}];
+            const cambio={tercero:t,[campo]:c,...(c!==(act[campo]||"")&&!act.conceptoOriginal&&act[campo]?{conceptoOriginal:act[campo]}:{}),updatedBy:S.uid,updatedAt:nowISO(),historial:hist};
+            await ref.update(cambio);Object.assign(r,cambio);
+            registrarActividad(`Modificó ${tipo}`,`${t||"Sin tercero"} · ${cambios.map(x=>x.campo).join(", ")}`,{ref:r.id});
+            est.textContent=enLista(c,lista)?"Guardado con el concepto oficial.":"Guardado.";guardar.disabled=false;cargar()}
+          catch(e){est.textContent="No se pudo guardar.";guardar.disabled=false}}},"Guardar");
+        return h("tr",null,h("td",{style:"white-space:nowrap"},fmtF(r.fecha)),h("td",{class:"v"},fmt(r.valor)),
+          h("td",{class:"small",style:"white-space:normal;max-width:240px"},m?`${fmtF(m.fecha)} · ${m.desc||"—"}${m.ref?" · "+m.ref:""}`:h("span",{class:"muted"},"No cruzado con el banco"),r.detalle?h("div",{class:"muted"},"Detalle: "+r.detalle):null),
+          h("td",null,iT),h("td",null,iC),h("td",null,h("div",{class:"stack",style:"gap:4px"},guardar,est)))});
+      abrirModal(`Registros escritos como «${g.k}»`,h("div",{class:"stack"},
+        h("p",{class:"small muted",style:"margin:0"},"Revisa la línea del banco de cada registro, corrige el tercero y el concepto, y presiona «Guardar» en esa fila. Si eliges un concepto de la lista oficial, sale de «fuera de la lista»; el texto anterior queda como observación en el registro."),
+        datalist(dl,lista),
+        h("div",{class:"tbl",style:"max-height:65vh;overflow:auto"},h("table",null,h("thead",null,h("tr",null,h("th",null,"Fecha"),h("th",{class:"v"},"Valor"),h("th",null,"Banco"),h("th",null,"Tercero"),h("th",null,lCampo),h("th",null,""))),h("tbody",null,filas)))),{ancho:1100});
+    };
     const pintar=(fp,fi)=>box.replaceChildren(
       h("div",{class:"row between"},h("h3",{style:"margin:0"},`Conceptos fuera de la lista · ${fp.length+fi.length}`),h("button",{class:"sm",onclick:cargar},"Actualizar")),
       h("div",{class:"small muted"},"Son textos escritos a mano que no coinciden con la lista. Elige a qué concepto corresponde cada uno y presiona «Reclasificar»: cambian todos los registros con ese texto, de cualquier mes, y queda la huella en el historial de cada uno. La app propone uno cuando lo reconoce; revísalo antes de aplicar."),
