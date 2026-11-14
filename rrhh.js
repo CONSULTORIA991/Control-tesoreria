@@ -58,7 +58,8 @@ const ultimoDia=m=>{const [y,mo]=m.split("-").map(Number);return new Date(Date.U
 const cd=f=>{const d=+f.slice(8,10);return d>=ultimoDia(f.slice(0,7))?30:Math.min(d,30)};
 function diasCom(desde,hasta,ini,fin){const a=desde>ini?desde:ini,b=hasta<fin?hasta:fin;if(!a||!b||a>b)return 0;return cd(b)-cd(a)+1}
 function salarioEn(e,fecha){let s=Number(e.salario)||0,f="";for(const n of RH.nov)if(n.empleadoId===e.id&&!n.anulado&&n.tipo==="cambio_salario"&&n.desde<=fecha&&n.desde>=f&&Number(n.valor)>0){f=n.desde;s=Number(n.valor)}return s}
-const activoEn=(e,desde,hasta)=>!!e.fechaIngreso&&e.fechaIngreso<=hasta&&(!e.fechaRetiro||e.fechaRetiro>=desde);
+/* sin fecha de ingreso registrada se toma como vinculado desde antes (sale en la nómina y la planilla) */
+const activoEn=(e,desde,hasta)=>(e.fechaIngreso||"0000-01-01")<=hasta&&(!e.fechaRetiro||e.fechaRetiro>=desde);
 function estadoEmp(e){const hf=hoy();if(e.fechaRetiro&&e.fechaRetiro<hf)return {k:"retirado",chip:h("span",{class:"chip neu"},"Retirado")};
   if(e.fechaRetiro)return {k:"activo",chip:h("span",{class:"chip warn"},"Se retira el "+fmtF(e.fechaRetiro))};
   return {k:"activo",chip:h("span",{class:"chip ok"},"Activo")}}
@@ -427,7 +428,7 @@ function formEmpleado(e){
   const form=h("form",{class:"stack",onsubmit:async ev=>{ev.preventDefault();
     const d={};for(const k of Object.keys(I))d[k]=I[k].value.trim();d.salario=Math.abs(parseMonto(d.salario)||0);d.auxilioNoSalarial=Math.abs(parseMonto(d.auxilioNoSalarial)||0);
     const mal=t=>{msg.hidden=false;msg.textContent=t;msg.scrollIntoView({block:"nearest"})};
-    const req=[["primerNombre","el primer nombre"],["primerApellido","el primer apellido"],["documento","el número de documento"],["cargo","el cargo"],["fechaIngreso","la fecha de ingreso"]];
+    const req=[["primerNombre","el primer nombre"],["primerApellido","el primer apellido"],["documento","el número de documento"],["cargo","el cargo"]];
     for(const [k,l] of req)if(!d[k]){I[k].focus();return mal("Falta "+l+".")}
     if(!d.salario)return mal("Escribe el salario mensual.");
     if(d.tipoContrato==="fijo"){if(!d.fechaFin)return mal("Indica la fecha en que termina el contrato a término fijo.");if(d.fechaFin<=d.fechaIngreso)return mal("La fecha de terminación debe ser posterior a la fecha de ingreso.")}else d.fechaFin="";
@@ -450,7 +451,7 @@ function formEmpleado(e){
       F("tipoDoc","Tipo de documento",{req:1,def:"CC",sel:[["CC","Cédula de ciudadanía"],["CE","Cédula de extranjería"],["TI","Tarjeta de identidad"],["PA","Pasaporte"],["PT","Permiso por protección temporal"]]}),
       F("documento","Número de documento",{req:1}),F("expedicion","Lugar de expedición",{ph:"Ej. Medellín"}),F("fechaNacimiento","Fecha de nacimiento",{type:"date"}),
       F("direccion","Dirección"),F("ciudadRes","Ciudad de residencia"),F("telefono","Teléfono"),F("correo","Correo",{type:"email"}))),
-    sec("Contrato",F("cargo","Cargo",{req:1}),F("area","Área"),tipoC,F("fechaIngreso","Fecha de ingreso",{type:"date",req:1,def:hoy()}),cFin,
+    sec("Contrato",F("cargo","Cargo",{req:1}),F("area","Área"),tipoC,F("fechaIngreso","Fecha de ingreso",{type:"date",def:hoy(),ayuda:"Puede quedar vacía por ahora; sale en contratos y certificados."}),cFin,
       F("salario","Salario mensual",{req:1,num:1,ph:String(p.smmlv),ayuda:nuevo?`Salario mínimo vigente: ${fmt(p.smmlv)}`:"Para un aumento usa Novedades → Cambio de salario: así queda la fecha desde la que rige."}),
       F("auxilioNoSalarial","Auxilio no salarial fijo (mensual)",{num:1,ph:"0",ayuda:"Si cada quincena se le paga un auxilio no constitutivo de salario, escribe el valor del mes. Sale en el desprendible y no suma a salud ni pensión."}),
       F("lugarTrabajo","Lugar de trabajo",{ph:"Si se deja vacío, la sede de la empresa"}),F("jornada","Jornada u horario",{ph:"Opcional. Ej. lunes a viernes de 8 a. m. a 5 p. m."}),cObra),
