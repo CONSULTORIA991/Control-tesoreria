@@ -1190,7 +1190,7 @@ VIEWS.banco={
       if(ext==="xlsx"||ext==="xls"){await cargarScript("https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js");
         const wb=XLSX.read(new Uint8Array(await file.arrayBuffer()),{type:"array",cellDates:true});const ws=wb.Sheets[wb.SheetNames[0]];
         rows=XLSX.utils.sheet_to_json(ws,{header:1,raw:true,defval:""});}
-      else{const buf=await file.arrayBuffer();let txt;try{txt=new TextDecoder("utf-8",{fatal:true}).decode(buf)}catch(_){txt=new TextDecoder("windows-1252").decode(buf)}rows=parseCSV(txt)}
+      else{const buf=await file.arrayBuffer();let txt;try{txt=new TextDecoder("utf-8",{fatal:true}).decode(buf)}catch(_){txt=new TextDecoder("windows-1252").decode(buf)}rows=parseTXTBancolombia(txt)||parseCSV(txt)}
       rows=rows.filter(r=>r.some(c=>String(c).trim()!==""));
       if(!rows.length)throw new Error("vacío");
       this.detectar(rows);this.pintarMapeo();
@@ -1340,6 +1340,14 @@ VIEWS.banco={
       :tablaVacia(`No hay movimientos de ${mesNombre(S.mes)}.`));
   }
 };
+/* Extracto TXT de Bancolombia: columnas separadas por espacios (cuenta, oficina, fecha AAAAMMDD, valor, código, descripción, 0).
+   Se devuelve con las mismas posiciones del CSV de Bancolombia, para que los movimientos se reconozcan igual sin importar el formato. */
+function parseTXTBancolombia(text){
+  const re=/^\s*(\d{3}-\d{6}-\d{2})\s+(\S+)\s+(\d{8})\s+(-?\d*\.?\d+)\s+(\S+)\s+(.*?)\s+(-?\d+)\s*$/;
+  const ls=text.split(/\r?\n/).filter(l=>l.trim());if(!ls.length)return null;
+  const rows=ls.map(l=>{const x=l.match(re);return x?[x[1],x[2],"",x[3],"",x[4],x[5],x[6],x[7]]:null});
+  return rows.filter(Boolean).length>=ls.length*0.9?rows.filter(Boolean):null;
+}
 function parseCSV(text){
   const first=text.split(/\r?\n/).slice(0,8).join("\n");let delim=",",best=-1;
   for(const c of [";",",","\t","|"]){const n=first.split(c).length;if(n>best){best=n;delim=c}}
