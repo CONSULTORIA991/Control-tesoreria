@@ -1403,6 +1403,13 @@ function imprimirInforme(titulo,sub,filas,negrita,apaisado){
 }
 /* Lista editable de registros: fecha, valor, línea del banco, tercero y concepto, con «Guardar» por fila.
    items: [{rec, m}] (m = movimiento del banco si ya se conoce). sinRegistro: [{m}] movimientos del banco aún sin clasificar. */
+/* ingresos clasificados de forma provisional con tercero «PENDIENTE»: quedan en el informe y aquí se les pone el nombre después */
+const ingresosTerceroPendiente=()=>S.ingresos.filter(x=>!x.anulado&&norm(x.tercero)==="pendiente");
+function abrirTerceroPendiente(){
+  const l=ingresosTerceroPendiente();if(!l.length){toast("No hay ingresos con tercero PENDIENTE.");return}
+  editarRegistros("ingreso",`Ingresos con tercero PENDIENTE (${l.length})`,"Escribe el nombre de quien pagó en «Tercero» y presiona Guardar. Si corresponde a otro concepto, cámbialo también. Al guardar, el ingreso sale de esta lista.",
+    l.map(rec=>({rec,m:null})),()=>{pintarAlertas();refrescar()});
+}
 function editarRegistros(tipo,titulo,ayuda,items,alGuardar,sinRegistro){
   const col=tipo==="pago"?"pagos":"ingresos",campo=tipo==="pago"?"concepto":"descripcion",lCampo=tipo==="pago"?"Concepto":"A qué corresponde";
   const lista=tipo==="pago"?conceptosPago():cat().ingresos,dl="dl-rec-"+tipo;
@@ -1886,6 +1893,7 @@ function itemsAlertas(){
   if(!enRH&&["admin","pagos"].includes(r)){const l=faltanSoporte();if(l.length){const d=Math.max(0,...l.map(m=>diasEntre(m.fecha,hoyF)));
     it.push({c:"",t:`${l.length} ${l.length===1?"salida del banco sin soporte de pago":"salidas del banco sin soporte de pago"}`,s:`${suma(l)} · ${d===0?"de hoy":`la más antigua es de hace ${d} ${d===1?"día":"días"}`}. Toca para subirlos.`,tab:"pendientes"})}}
   if(!enRH&&["admin","ingresos"].includes(r)){const l=creditosSinClasificar();if(l.length)it.push({c:"",t:`${l.length} ${l.length===1?"ingreso del banco sin clasificar":"ingresos del banco sin clasificar"}`,s:`${suma(l)}. Toca para clasificarlos.`,tab:"ingresos"})}
+  if(!enRH&&["admin","ingresos"].includes(r)){const l=ingresosTerceroPendiente();if(l.length)it.push({c:"warn",t:`${l.length} ${l.length===1?"ingreso con tercero PENDIENTE":"ingresos con tercero PENDIENTE"}`,s:`${fmt(l.reduce((a,x)=>a+Math.abs(Number(x.valor)||0),0))}. Ya cuentan en el informe; toca para ponerles el nombre.`,fn:abrirTerceroPendiente})}
   const ult=S.movs.reduce((a,m)=>m.fecha>a?m.fecha:a,"");
   if(!enRH&&ult&&["admin","pagos","ingresos"].includes(r)){const lim=ult;
     const regs=[...(r!=="ingresos"?S.pagos.filter(p=>!p.sinSoporte):[]),...(r!=="pagos"?S.ingresos:[])].filter(x=>!x.anulado&&x.fecha<=lim&&!S.conc.recMov.has(x.id));
