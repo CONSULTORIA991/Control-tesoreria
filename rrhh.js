@@ -48,6 +48,7 @@ const CONTRATO_LBL={indefinido:"Término indefinido",fijo:"Término fijo",obra_l
 const CONTRATO_TXT={indefinido:"a término indefinido",fijo:"a término fijo",obra_labor:"por duración de la obra o labor"};
 const nombreEmp=e=>e?[e.primerNombre,e.segundoNombre,e.primerApellido,e.segundoApellido].filter(Boolean).join(" "):"";
 const empPor=id=>RH.emp.find(e=>e.id===id);
+const esServ=e=>e?.vinculacion==="servicios";
 const porNombre=(a,b)=>nombreEmp(a).localeCompare(nombreEmp(b),"es");
 const soloNum=s=>String(s||"").replace(/\D/g,"");
 const numF=new Intl.NumberFormat("es-CO",{maximumFractionDigits:0});
@@ -125,22 +126,36 @@ function periodo(mes,q){return {mes,q,id:`${mes}-Q${q}`,desde:q===1?`${mes}-01`:
 function liquidar(e,per,p){
   const ini=per.desde,fin=per.hasta;if(!activoEn(e,ini,fin))return null;
   const sal=salarioEn(e,fin),dia=sal/30,dc=diasCom(e.fechaIngreso,e.fechaRetiro||"9999-12-31",ini,fin);
-  let dPag=0,dIge=0,dNo=0,extras=0,comis=0,noSal=0,desc=0,prest=0,hExtra=0,hDom=0,vDom=0;const det=[];
+  let dPag=0,dIge=0,dIgeEmp=0,dNo=0,extras=0,comis=0,noSal=0,desc=0,prest=0,hExtra=0,hDom=0,vDom=0,hNoc=0,vNoc=0;const det=[];
   for(const n of RH.nov){
     if(n.empleadoId!==e.id||n.anulado)continue;const t=NOV[n.tipo];if(!t||n.tipo==="cambio_salario")continue;
     if(t.dias){const d=diasCom(n.desde,n.hasta||n.desde,ini,fin);if(!d)continue;
-      if(t.pago==="ige")dIge+=d;else if(t.pago)dPag+=d;else dNo+=d;det.push(`${t.l}: ${d} ${d===1?"día":"días"}`)}
+      if(t.pago==="ige"){dIge+=d;/* los 2 primeros días de cada incapacidad los paga el empleador; desde el 3.º, la EPS */
+        const yaPasaron=n.desde<ini?diasEntre(n.desde,ini):0;dIgeEmp+=Math.max(0,Math.min(d,2-yaPasaron))}
+      else if(t.pago)dPag+=d;else dNo+=d;det.push(`${t.l}: ${d} ${d===1?"día":"días"}`)}
     else{if(!(n.desde>=ini&&n.desde<=fin))continue;const v=n.tipo==="horas_extra"&&!(Number(n.valor)>0)?valorHorasExacto(n,sal,p):Number(n.valor)||0;
       if(t.descuento){desc+=v;if(n.tipo==="prestamo")prest+=v}
-      else if(n.tipo==="horas_extra"){extras+=v;if(n.subtipo==="RDF"||n.subtipo==="RNDF"||n.subtipo==="HODF"){hDom+=Number(n.horas)||0;vDom+=v}else hExtra+=Number(n.horas)||0}
+      else if(n.tipo==="horas_extra"){extras+=v;const hh=Number(n.horas)||0;
+        if(n.subtipo==="RDF"||n.subtipo==="RNDF"||n.subtipo==="HODF"){hDom+=hh;vDom+=v}else if(n.subtipo==="HEN"||n.subtipo==="HENDF"||n.subtipo==="RN"){hNoc+=hh;vNoc+=v}else hExtra+=hh}
       else if(t.salarial)comis+=v;else noSal+=v;det.push(`${t.l}: ${fmt(Math.round(v))}`)}
   }
-  const dTrab=Math.max(0,dc-dPag-dIge-dNo),r=x=>Math.round(Math.round(x*100)/100); /* redondeo al peso sin errores de decimales */
+  const r=x=>Math.round(Math.round(x*100)/100); /* redondeo al peso sin errores de decimales */
+  if(esServ(e)){
+    /* prestación de servicios: honorarios por los días del periodo; sin auxilio de transporte ni descuentos de salud y pensión
+       (el contratista paga su propia seguridad social). Solo restan las ausencias no pagadas y los descuentos registrados. */
+    const dH=Math.max(0,dc-dNo),auxFijoS=Number(e.auxilioNoSalarial)||0;if(auxFijoS>0&&dH>0){const v=auxFijoS/30*dH;noSal+=v;det.push(`Auxilio no salarial fijo: ${fmt(Math.round(v))}`)}
+    const L={empleadoId:e.id,vinculacion:"servicios",nombre:nombreEmp(e),documento:e.documento||"",cargo:e.cargo||"",salario:sal,dias:dc,diasTrab:dH,diasPagados:0,diasIncap:0,diasNoPagados:dNo,
+      basico:r(dia*dH),ausPag:0,incap:0,aux:0,extras:r(extras),comis:r(comis),noSal:r(noSal),desc:r(desc),prest:r(prest),hExtra,hDom,vDom:r(vDom),hNoc,vNoc:r(vNoc),vExt:r(extras-vDom-vNoc),detalle:det,salud:0,pension:0,fsp:0};
+    L.devengado=r(dia*dH+extras+comis+noSal);L.deducciones=r(desc);L.neto=L.devengado-L.deducciones;return L;
+  }
+  const dTrab=Math.max(0,dc-dPag-dIge-dNo);
   /* auxilio no salarial fijo de la ficha (valor mensual, proporcional a los días trabajados) */
   const auxFijo=Number(e.auxilioNoSalarial)||0;if(auxFijo>0&&dTrab>0){const v=auxFijo/30*dTrab;noSal+=v;det.push(`Auxilio no salarial fijo: ${fmt(Math.round(v))}`)}
   const L={empleadoId:e.id,nombre:nombreEmp(e),documento:e.documento||"",cargo:e.cargo||"",salario:sal,dias:dc,diasTrab:dTrab,diasPagados:dPag,diasIncap:dIge,diasNoPagados:dNo,
     basico:r(dia*dTrab),ausPag:r(dia*dPag),incap:r(Math.min(dia,Math.max(dia*2/3,p.smmlv/30))*dIge),aux:sal<=2*p.smmlv?r(p.auxTransporte/30*dTrab):0,
-    extras:r(extras),comis:r(comis),noSal:r(noSal),desc:r(desc),prest:r(prest),hExtra,hDom,vDom:r(vDom),vExt:r(extras-vDom),detalle:det};
+    extras:r(extras),comis:r(comis),noSal:r(noSal),desc:r(desc),prest:r(prest),hExtra,hDom,vDom:r(vDom),hNoc,vNoc:r(vNoc),vExt:r(extras-vDom-vNoc),detalle:det,
+    diasIncapEmp:dIgeEmp,incapEmp:r(Math.min(dia,Math.max(dia*2/3,p.smmlv/30))*dIgeEmp)};
+  L.incapEps=L.incap-L.incapEmp;
   /* Los totales se calculan con los valores exactos y se redondean una sola vez al final,
      para que el neto coincida con lo que se paga (cada renglón se muestra redondeado al peso). */
   const auxX=sal<=2*p.smmlv?p.auxTransporte/30*dTrab:0,ibc=dia*dTrab+dia*dPag+Math.min(dia,Math.max(dia*2/3,p.smmlv/30))*dIge+extras+comis,k=sal/p.smmlv;
@@ -156,7 +171,7 @@ const suma=(l,k)=>l.reduce((s,x)=>s+(Number(x[k])||0),0);
 /* ---------- seguridad social: datos del mes para la planilla (PILA) ---------- */
 function pilaMes(mes){
   const ini=`${mes}-01`,fin=`${mes}-${pad(ultimoDia(mes))}`;
-  return RH.emp.filter(e=>activoEn(e,ini,fin)).sort(porNombre).map(e=>{
+  return RH.emp.filter(e=>!esServ(e)&&activoEn(e,ini,fin)).sort(porNombre).map(e=>{
     const dc=diasCom(e.fechaIngreso,e.fechaRetiro||"9999-12-31",ini,fin),sal=salarioEn(e,fin),nov={};
     const add=(cod,d,a,b)=>{const x=nov[cod]??={dias:0,ini:a,fin:b};x.dias+=d;if(a<x.ini)x.ini=a;if(b>x.fin)x.fin=b};
     for(const n of RH.nov){if(n.empleadoId!==e.id||n.anulado)continue;const t=NOV[n.tipo];if(!t?.pila)continue;
@@ -451,7 +466,8 @@ function formEmpleado(e){
       F("tipoDoc","Tipo de documento",{req:1,def:"CC",sel:[["CC","Cédula de ciudadanía"],["CE","Cédula de extranjería"],["TI","Tarjeta de identidad"],["PA","Pasaporte"],["PT","Permiso por protección temporal"]]}),
       F("documento","Número de documento",{req:1}),F("expedicion","Lugar de expedición",{ph:"Ej. Medellín"}),F("fechaNacimiento","Fecha de nacimiento",{type:"date"}),
       F("direccion","Dirección"),F("ciudadRes","Ciudad de residencia"),F("telefono","Teléfono"),F("correo","Correo",{type:"email"}))),
-    sec("Contrato",F("cargo","Cargo",{req:1}),F("area","Área"),tipoC,F("fechaIngreso","Fecha de ingreso",{type:"date",def:hoy(),ayuda:"Puede quedar vacía por ahora; sale en contratos y certificados."}),cFin,
+    sec("Contrato",F("vinculacion","Tipo de vinculación",{def:"nomina",sel:[["nomina","Nómina (contrato laboral)"],["servicios","Prestación de servicios"]],ayuda:"Prestación de servicios: se pagan honorarios, sin auxilio de transporte ni descuentos de salud y pensión, y no va en la planilla de seguridad social."}),
+      F("cargo","Cargo",{req:1}),F("area","Área"),tipoC,F("fechaIngreso","Fecha de ingreso",{type:"date",def:hoy(),ayuda:"Puede quedar vacía por ahora; sale en contratos y certificados."}),cFin,
       F("salario","Salario mensual",{req:1,num:1,ph:String(p.smmlv),ayuda:nuevo?`Salario mínimo vigente: ${fmt(p.smmlv)}`:"Para un aumento usa Novedades → Cambio de salario: así queda la fecha desde la que rige."}),
       F("auxilioNoSalarial","Auxilio no salarial fijo (mensual)",{num:1,ph:"0",ayuda:"Si cada quincena se le paga un auxilio no constitutivo de salario, escribe el valor del mes. Sale en el desprendible y no suma a salud ni pensión."}),
       F("lugarTrabajo","Lugar de trabajo",{ph:"Si se deja vacío, la sede de la empresa"}),F("jornada","Jornada u horario",{ph:"Opcional. Ej. lunes a viernes de 8 a. m. a 5 p. m."}),cObra),
@@ -485,7 +501,7 @@ function fichaEmpleado(e){
   const docs=RH.docs.filter(d=>d.empleadoId===e.id).sort((a,b)=>String(b.createdAt).localeCompare(String(a.createdAt))).slice(0,8);
   const selDoc=h("select",{id:"fe-doc","aria-label":"Generar documento",style:"max-width:240px",onchange:ev=>{const t=ev.target.value;ev.target.value="";if(t){cerrar();generador(t,{empleadoId:e.id})}}},h("option",{value:""},"Generar documento…"),Object.entries(DOCS).map(([k,d])=>h("option",{value:k},d.l)));
   cerrar=abrirModal(nombreEmp(e),h("div",{class:"stack"},
-    h("div",{class:"row"},est.chip,h("span",{class:"chip neu"},CONTRATO_LBL[e.tipoContrato]||"Contrato"),e.tipoContrato==="fijo"&&e.fechaFin?h("span",{class:"chip info"},"Vence el "+fmtF(e.fechaFin)):null),
+    h("div",{class:"row"},est.chip,esServ(e)?h("span",{class:"chip info"},"Prestación de servicios"):h("span",{class:"chip neu"},CONTRATO_LBL[e.tipoContrato]||"Contrato"),e.tipoContrato==="fijo"&&e.fechaFin?h("span",{class:"chip info"},"Vence el "+fmtF(e.fechaFin)):null),
     h("div",{class:"row"},h("button",{class:"pri",onclick:()=>{cerrar();formEmpleado(e)}},"Editar ficha"),h("button",{onclick:()=>{cerrar();modalNovedad(e.id)}},"Registrar novedad"),selDoc,
       est.k==="activo"&&!e.fechaRetiro?h("button",{class:"danger",onclick:()=>{cerrar();retirar(e)}},"Retirar"):
       h("button",{onclick:ev=>confirmarEnPagina(ev.currentTarget,"Confirmar reintegro",async()=>{try{await S.db.doc("rh_empleados/"+e.id).update({fechaRetiro:"",motivoRetiro:"",updatedBy:S.uid,updatedAt:nowISO()});registrarActividad("Deshizo retiro de empleado",nombreEmp(e));cerrar();toast("El empleado vuelve a estar activo.")}catch(err){toast("No se pudo guardar.")}})},"Deshacer retiro")),
@@ -517,7 +533,7 @@ VIEWS.rh_empleados={busca:"",estado:"activo",
     const l=RH.emp.filter(e=>this.estado==="todos"||estadoEmp(e).k===this.estado).filter(e=>!q||norm(`${nombreEmp(e)} ${e.documento} ${e.cargo} ${e.area}`).includes(q)).sort(porNombre);
     this.lista.replaceChildren(l.length?h("div",{class:"tbl"},h("table",null,h("thead",null,h("tr",null,h("th",null,"Empleado"),h("th",null,"Cargo"),h("th",null,"Contrato"),h("th",null,"Ingreso"),h("th",{class:"v"},"Salario"),h("th",null,"Estado"))),
       h("tbody",null,l.map(e=>h("tr",{class:"click",onclick:()=>fichaEmpleado(e)},h("td",null,h("strong",null,nombreEmp(e)),h("div",{class:"small muted"},`${e.tipoDoc||"CC"} ${e.documento}`)),h("td",null,e.cargo,e.area?h("div",{class:"small muted"},e.area):null),
-        h("td",null,CONTRATO_LBL[e.tipoContrato]||"—",e.tipoContrato==="fijo"&&e.fechaFin?h("div",{class:"small muted"},"hasta "+fmtF(e.fechaFin)):null),h("td",null,fmtF(e.fechaIngreso)),h("td",{class:"v"},fmt(salarioEn(e,hf))),h("td",null,estadoEmp(e).chip))))))
+        h("td",null,esServ(e)?h("span",{class:"chip info"},"Prestación de servicios"):CONTRATO_LBL[e.tipoContrato]||"—",e.tipoContrato==="fijo"&&e.fechaFin?h("div",{class:"small muted"},"hasta "+fmtF(e.fechaFin)):null),h("td",null,fmtF(e.fechaIngreso)),h("td",{class:"v"},fmt(salarioEn(e,hf))),h("td",null,estadoEmp(e).chip))))))
       :tablaVacia(RH.emp.length?"No hay empleados con este filtro.":"Aún no hay empleados. Presiona «Nuevo empleado» para crear el primero: al guardarlo se generan su contrato y sus documentos de ingreso."));
   }
 };
@@ -591,11 +607,17 @@ VIEWS.rh_novedades={filtro:"",
 function desprendible(L,per){
   /* mismo formato del comprobante que ya usa la empresa: ingresos y deducciones con concepto, cantidad y valor */
   const v=valores(null,{}),n0=x=>Number(x)||0,pesos=x=>x?"$"+numF.format(x):"-",otros=n0(L.desc)-n0(L.prest),hExtraV=L.vExt!=null?n0(L.vExt):n0(L.extras)-n0(L.vDom);
-  const dia=f=>`${+f.slice(8,10)} DE ${MESES[+f.slice(5,7)-1].toUpperCase()}`;
-  const ing=[["Sueldo",L.diasTrab,L.basico],["Auxilio de Transporte",L.diasTrab,L.aux],["Auxilio no constitutivo de salario",L.dias,L.noSal],["Horas extras",n0(L.hExtra),hExtraV],["Horas ordinarias dominicales",n0(L.hDom),n0(L.vDom)],
-      ...(L.ausPag?[["Vacaciones y licencias pagadas",L.diasPagados,L.ausPag]]:[]),...(L.incap?[["Incapacidades",L.diasIncap,L.incap]]:[]),...(L.comis?[["Comisiones y bonificaciones",1,L.comis]]:[])],
-    ded=[["Fondo de Salud",L.dias,L.salud],["Fondo de Pensión",L.dias,L.pension],["Descuento préstamo",L.dias,n0(L.prest)],...(L.fsp?[["Fondo de solidaridad pensional",L.dias,L.fsp]]:[]),...(otros>0?[["Otros descuentos",1,otros]]:[])];
-  const c3=x=>x?`<td>${escH(x[0])}</td><td class="v">${x[1]}</td><td class="v">${pesos(x[2])}</td>`:"<td></td><td></td><td></td>";
+  const dia=f=>`${+f.slice(8,10)} DE ${MESES[+f.slice(5,7)-1].toUpperCase()}`,serv=L.vinculacion==="servicios";
+  const incEmp=L.incapEmp!=null?n0(L.incapEmp):0,incEps=L.incapEmp!=null?n0(L.incapEps):n0(L.incap);
+  const extrasServ=n0(L.extras)+n0(L.comis);
+  const ing=serv?[["Honorarios por prestación de servicios",L.diasTrab,L.basico],["",L.diasTrab,0],["Auxilio no constitutivo de salario",L.diasTrab,L.noSal],...(extrasServ?[["Otros pagos",1,extrasServ]]:[])]
+    :[["Sueldo",L.diasTrab,L.basico],["Auxilio de Transporte",L.diasTrab,L.aux],["Auxilio no constitutivo de salario",L.dias,L.noSal],["Horas extras diurnas",n0(L.hExtra),hExtraV],["Horas extras nocturnas",n0(L.hNoc),n0(L.vNoc)],["Horas ordinarias dominicales",n0(L.hDom),n0(L.vDom)],
+      ["Incapacidad a cargo del empleador",n0(L.diasIncapEmp),incEmp],["Incapacidad a cargo de la EPS",n0(L.diasIncap)-n0(L.diasIncapEmp),incEps],
+      ...(L.ausPag?[["Vacaciones y licencias pagadas",L.diasPagados,L.ausPag]]:[]),...(L.comis?[["Comisiones y bonificaciones",1,L.comis]]:[])],
+    ded=serv?[...(n0(L.prest)?[["Descuento préstamo",1,n0(L.prest)]]:[]),...(otros>0?[["Otros descuentos",1,otros]]:[])]
+    :[["Fondo de Salud",L.dias,L.salud],["Fondo de Pensión",L.dias,L.pension],["Descuento préstamo",L.dias,n0(L.prest)],...(L.fsp?[["Fondo de solidaridad pensional",L.dias,L.fsp]]:[]),...(otros>0?[["Otros descuentos",1,otros]]:[])];
+  if(serv)while(ing.length<7)ing.push(["","",""]);
+  const c3=x=>x?`<td>${escH(x[0])}</td><td class="v">${x[1]}</td><td class="v">${x[2]===""?"":(x[0]?pesos(x[2]):"")}</td>`:"<td>&nbsp;</td><td></td><td></td>";
   const filas=Array.from({length:Math.max(ing.length,ded.length)},(_,i)=>`<tr>${c3(ing[i])}${c3(ded[i])}</tr>`).join("");
   const logo=RH.empresa.logo?`<img src="${RH.empresa.logo}" alt="" style="max-width:150px;max-height:64px">`:"";
   return `<div class="hoja" style="text-align:left;font-family:Arial,Helvetica,sans-serif"><table class="firmas" style="margin:0 0 6pt"><tr>${logo?`<td width="26%" style="vertical-align:middle">${logo}</td>`:""}<td style="text-align:center;vertical-align:middle"><strong style="font-size:12.5pt">${escH(String(v.empresa).toUpperCase())}</strong>${v.nit_empresa?`<br><strong>NIT: ${escH(v.nit_empresa)}</strong>`:""}<br><strong>COMPROBANTE DE NÓMINA</strong></td>${logo?`<td width="16%"></td>`:""}</tr></table>
@@ -604,7 +626,7 @@ function desprendible(L,per){
 <tr><td><strong>IDENTIFICACIÓN:</strong></td><td>${escH(L.documento)}</td></tr>
 <tr><td><strong>CARGO:</strong></td><td>${escH(String(L.cargo).toUpperCase())}</td></tr>
 <tr><td><strong>SALARIO BÁSICO:</strong></td><td>$${numF.format(L.salario)}</td></tr>
-<tr><td><strong>TIPO DE VINCULACIÓN:</strong></td><td>NÓMINA</td></tr></table>
+<tr><td><strong>TIPO DE VINCULACIÓN:</strong></td><td><strong>${serv?"PRESTACIÓN DE SERVICIOS":"NÓMINA"}</strong></td></tr></table>
 <table><tr><th colspan="3" style="text-align:center">INGRESOS</th><th colspan="3" style="text-align:center">DEDUCCIONES</th></tr>
 <tr><th>CONCEPTO</th><th class="v">CANTIDAD</th><th class="v">VALOR</th><th>CONCEPTO</th><th class="v">CANTIDAD</th><th class="v">VALOR</th></tr>${filas}
 <tr><th colspan="2">TOTAL INGRESOS</th><th class="v">${pesos(L.devengado)}</th><th colspan="2">TOTAL DEDUCCIONES</th><th class="v">${pesos(L.deducciones)}</th></tr>
@@ -638,7 +660,7 @@ VIEWS.rh_nomina={q:null,
       h("div",{class:"kpis"},kpi("Empleados",String(f.length),`${fmtF(per.desde)} a ${fmtF(per.hasta)}`),kpi("Total devengado",fmt(T("devengado"))),kpi("Deducciones",fmt(T("deducciones")),"salud, pensión y descuentos"),kpi("Neto a pagar",fmt(T("neto")),"lo que sale del banco")),
       h("div",{class:"card"},h("div",{class:"tbl"},h("table",null,h("thead",null,h("tr",null,h("th",null,"Empleado"),h("th",{class:"v"},"Días"),h("th",{class:"v"},"Básico"),h("th",{class:"v"},"Aux. transporte"),h("th",{class:"v"},"Extras"),h("th",{class:"v"},"Otros pagos"),h("th",{class:"v"},"Devengado"),h("th",{class:"v"},"Salud y pensión"),h("th",{class:"v"},"Otros desc."),h("th",{class:"v"},"Neto a pagar"))),
         h("tbody",null,f.map(L=>h("tr",{class:"click",title:"Ver el desprendible",onclick:()=>{const d=h("div",{class:"papel"});d.innerHTML=desprendible(L,per);abrirModal("Desprendible de "+L.nombre,h("div",{class:"stack"},d,h("div",{class:"row"},h("button",{class:"pri",onclick:()=>imprimir(`Nomina ${per.q}_${per.mes} ${L.nombre}`,[desprendible(L,per)])},"Imprimir o guardar en PDF"),h("button",{onclick:()=>descargarWord(`Nomina ${per.q}_${per.mes} ${L.nombre}`.replace(/[\\/:*?"<>|]/g,""),[desprendible(L,per)])},"Descargar en Word"))),{ancho:820})}},
-          h("td",null,h("strong",null,L.nombre),L.detalle?.length?h("div",{class:"small muted"},L.detalle.join(" · ")):null),h("td",{class:"v"},String(L.diasTrab)+(L.diasTrab!==L.dias?` de ${L.dias}`:"")),h("td",{class:"v"},fmt(L.basico)),h("td",{class:"v"},fmt(L.aux)),h("td",{class:"v"},fmt(L.extras)),h("td",{class:"v"},fmt(L.ausPag+L.incap+L.comis+L.noSal)),
+          h("td",null,h("strong",null,L.nombre),L.vinculacion==="servicios"?h("span",{class:"chip info",style:"margin-left:6px"},"Prestación de servicios"):null,L.detalle?.length?h("div",{class:"small muted"},L.detalle.join(" · ")):null),h("td",{class:"v"},String(L.diasTrab)+(L.diasTrab!==L.dias?` de ${L.dias}`:"")),h("td",{class:"v"},fmt(L.basico)),h("td",{class:"v"},fmt(L.aux)),h("td",{class:"v"},fmt(L.extras)),h("td",{class:"v"},fmt(L.ausPag+L.incap+L.comis+L.noSal)),
           h("td",{class:"v"},fmt(L.devengado)),h("td",{class:"v neg"},fmt(L.salud+L.pension+L.fsp)),h("td",{class:"v neg"},fmt(L.desc)),h("td",{class:"v"},h("strong",null,fmt(L.neto)))))),
         h("tfoot",null,h("tr",null,h("th",null,"Total"),h("th",null,""),h("th",{class:"v"},fmt(T("basico"))),h("th",{class:"v"},fmt(T("aux"))),h("th",{class:"v"},fmt(T("extras"))),h("th",{class:"v"},fmt(T("ausPag")+T("incap")+T("comis")+T("noSal"))),h("th",{class:"v"},fmt(T("devengado"))),h("th",{class:"v"},fmt(T("salud")+T("pension")+T("fsp"))),h("th",{class:"v"},fmt(T("desc"))),h("th",{class:"v"},fmt(T("neto")))))))),
       h("div",{class:"row"},h("button",{class:"pri",onclick:aExcel},"Descargar nómina en Excel"),h("button",{onclick:()=>imprimir("Desprendibles de nómina "+per.id,f.map(L=>desprendible(L,per)))},"Desprendibles de todos (imprimir o PDF)"),
