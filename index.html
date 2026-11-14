@@ -1206,7 +1206,13 @@ VIEWS.banco={
     const m={fecha:find(/fecha/i),desc:find(/descrip|concepto|detalle|transacc|movimiento/i),ref:find(/referencia|documento|n[uú]mero|^ref/i),valor:find(/valor|monto|importe/i),debito:find(/d[eé]bito|retiro|cargo|egreso|salida/i),credito:find(/cr[eé]dito|dep[oó]sito|abono|ingreso|entrada/i)};
     const muestra=st.data.slice(0,20);
     if(m.fecha<0)m.fecha=st.headers.findIndex((_,i)=>muestra.filter(r=>parseFecha(r[i])).length>muestra.length/2);
-    if(m.valor<0&&!(m.debito>=0&&m.credito>=0)){for(let i=ncol-1;i>=0;i--){if(i===m.fecha)continue;if(muestra.filter(r=>parseMonto(r[i])!=null&&String(r[i]).trim()!=="").length>muestra.length/2){m.valor=i;break}}}
+    /* sin encabezado de valor: se elige la columna numérica con más valores distintos y con negativos o decimales
+       (en el CSV de Bancolombia la última columna siempre es 0 y otra trae el código de la transacción) */
+    if(m.valor<0&&!(m.debito>=0&&m.credito>=0)){let mejor=-1,pts=-1;const mu=st.data.slice(0,200);
+      for(let i=0;i<ncol;i++){if(i===m.fecha)continue;const xs=mu.map(r=>String(r[i]??"").trim()).filter(Boolean);if(xs.length<=mu.length/2||xs.filter(x=>parseMonto(x)!=null).length<xs.length*0.9)continue;
+        if(xs.filter(x=>parseFecha(x)).length>xs.length/2)continue;
+        const ns=xs.map(parseMonto).filter(n=>n!=null&&n!==0),p=new Set(ns).size+(ns.some(n=>n<0)?1000:0)+(xs.some(x=>/[.,]\d{1,2}$/.test(x))?500:0);if(p>pts){pts=p;mejor=i}}
+      m.valor=mejor}
     if(m.desc<0)m.desc=st.headers.findIndex((_,i)=>i!==m.fecha&&i!==m.valor&&muestra.filter(r=>/[a-z]{3}/i.test(String(r[i]))).length>muestra.length/2);
     st.map=m;st.modo=(m.debito>=0&&m.credito>=0&&m.valor<0)?"dc":"valor";if(m.debito>=0&&m.credito>=0&&m.valor>=0)st.modo="dc";
     st.recordado=false;st.incluir=new Set();
