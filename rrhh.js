@@ -108,10 +108,11 @@ const NOV={
   otro_descuento:{l:"Otro descuento",g:"Descuentos",valor:1,descuento:1,ayuda:"Se resta del pago de la quincena de esa fecha."},
   cambio_salario:{l:"Cambio de salario",g:"Contrato",valor:1,pila:"VSP",ayuda:"Escribe el nuevo salario mensual y desde qué fecha rige."},
 };
-const HORAS={HED:["Hora extra diurna",()=>1.25],HEN:["Hora extra nocturna",()=>1.75],RN:["Recargo nocturno",()=>0.35],
+const HORAS={HODF:["Hora ordinaria en domingo o festivo (hora + recargo)",p=>1+p.recargoDominical/100],HED:["Hora extra diurna",()=>1.25],HEN:["Hora extra nocturna",()=>1.75],RN:["Recargo nocturno",()=>0.35],
   RDF:["Recargo dominical o festivo",p=>p.recargoDominical/100],HEDDF:["Hora extra diurna en domingo o festivo",p=>1.25+p.recargoDominical/100],
   HENDF:["Hora extra nocturna en domingo o festivo",p=>1.75+p.recargoDominical/100],RNDF:["Recargo nocturno en domingo o festivo",p=>0.35+p.recargoDominical/100]};
-const valorHoras=(n,sal,p)=>Math.round((Number(n.horas)||0)*sal/p.horasMes*(HORAS[n.subtipo]?.[1](p)||0));
+const valorHorasExacto=(n,sal,p)=>(Number(n.horas)||0)*sal/p.horasMes*(HORAS[n.subtipo]?.[1](p)||0);
+const valorHoras=(n,sal,p)=>Math.round(valorHorasExacto(n,sal,p));
 function novTexto(n){const t=NOV[n.tipo]||{l:n.tipo};
   if(t.dias)return {cuando:n.hasta&&n.hasta!==n.desde?`${fmtF(n.desde)} a ${fmtF(n.hasta)}`:fmtF(n.desde),cuanto:`${diasEntre(n.desde,n.hasta||n.desde)+1} días`};
   if(t.horas)return {cuando:fmtF(n.desde),cuanto:`${n.horas} h · ${HORAS[n.subtipo]?.[0]||""}${Number(n.valor)>0?" · "+fmt(n.valor):""}`};
@@ -128,15 +129,17 @@ function liquidar(e,per,p){
     if(n.empleadoId!==e.id||n.anulado)continue;const t=NOV[n.tipo];if(!t||n.tipo==="cambio_salario")continue;
     if(t.dias){const d=diasCom(n.desde,n.hasta||n.desde,ini,fin);if(!d)continue;
       if(t.pago==="ige")dIge+=d;else if(t.pago)dPag+=d;else dNo+=d;det.push(`${t.l}: ${d} ${d===1?"día":"días"}`)}
-    else{if(!(n.desde>=ini&&n.desde<=fin))continue;const v=n.tipo==="horas_extra"&&!(Number(n.valor)>0)?valorHoras(n,sal,p):Number(n.valor)||0;
+    else{if(!(n.desde>=ini&&n.desde<=fin))continue;const v=n.tipo==="horas_extra"&&!(Number(n.valor)>0)?valorHorasExacto(n,sal,p):Number(n.valor)||0;
       if(t.descuento){desc+=v;if(n.tipo==="prestamo")prest+=v}
-      else if(n.tipo==="horas_extra"){extras+=v;if(n.subtipo==="RDF"||n.subtipo==="RNDF"){hDom+=Number(n.horas)||0;vDom+=v}else hExtra+=Number(n.horas)||0}
-      else if(t.salarial)comis+=v;else noSal+=v;det.push(`${t.l}: ${fmt(v)}`)}
+      else if(n.tipo==="horas_extra"){extras+=v;if(n.subtipo==="RDF"||n.subtipo==="RNDF"||n.subtipo==="HODF"){hDom+=Number(n.horas)||0;vDom+=v}else hExtra+=Number(n.horas)||0}
+      else if(t.salarial)comis+=v;else noSal+=v;det.push(`${t.l}: ${fmt(Math.round(v))}`)}
   }
   const dTrab=Math.max(0,dc-dPag-dIge-dNo),r=x=>Math.round(Math.round(x*100)/100); /* redondeo al peso sin errores de decimales */
+  /* auxilio no salarial fijo de la ficha (valor mensual, proporcional a los días trabajados) */
+  const auxFijo=Number(e.auxilioNoSalarial)||0;if(auxFijo>0&&dTrab>0){const v=auxFijo/30*dTrab;noSal+=v;det.push(`Auxilio no salarial fijo: ${fmt(Math.round(v))}`)}
   const L={empleadoId:e.id,nombre:nombreEmp(e),documento:e.documento||"",cargo:e.cargo||"",salario:sal,dias:dc,diasTrab:dTrab,diasPagados:dPag,diasIncap:dIge,diasNoPagados:dNo,
     basico:r(dia*dTrab),ausPag:r(dia*dPag),incap:r(Math.min(dia,Math.max(dia*2/3,p.smmlv/30))*dIge),aux:sal<=2*p.smmlv?r(p.auxTransporte/30*dTrab):0,
-    extras:r(extras),comis:r(comis),noSal:r(noSal),desc:r(desc),prest:r(prest),hExtra,hDom,vDom:r(vDom),detalle:det};
+    extras:r(extras),comis:r(comis),noSal:r(noSal),desc:r(desc),prest:r(prest),hExtra,hDom,vDom:r(vDom),vExt:r(extras-vDom),detalle:det};
   /* Los totales se calculan con los valores exactos y se redondean una sola vez al final,
      para que el neto coincida con lo que se paga (cada renglón se muestra redondeado al peso). */
   const auxX=sal<=2*p.smmlv?p.auxTransporte/30*dTrab:0,ibc=dia*dTrab+dia*dPag+Math.min(dia,Math.max(dia*2/3,p.smmlv/30))*dIge+extras+comis,k=sal/p.smmlv;
@@ -331,7 +334,7 @@ function cuerpoDoc(texto,v){
     return `<p>${b.split("\n").map(linea).join("<br>")}</p>`}).join("");
   return {html,faltan:[...falt]};
 }
-const membrete=v=>RH.empresa.membrete===false?"":`<div class="membrete"><strong>${escH(v.empresa)}</strong>${v.nit_empresa?`<br>NIT ${escH(v.nit_empresa)}`:""}${v.direccion_empresa?`<br>${escH([v.direccion_empresa,v.ciudad].filter(Boolean).join(" · "))}`:""}${v.telefono_empresa?`<br>Tel. ${escH(v.telefono_empresa)}`:""}</div>`;
+const membrete=v=>RH.empresa.membrete===false?"":`<div class="membrete">${RH.empresa.logo?`<img src="${RH.empresa.logo}" alt="" style="max-height:52px;max-width:160px;display:block;margin:0 auto 6pt">`:""}<strong>${escH(v.empresa)}</strong>${v.nit_empresa?`<br>NIT ${escH(v.nit_empresa)}`:""}${v.direccion_empresa?`<br>${escH([v.direccion_empresa,v.ciudad].filter(Boolean).join(" · "))}`:""}${v.telefono_empresa?`<br>Tel. ${escH(v.telefono_empresa)}`:""}</div>`;
 const CSS_DOC=`.hoja{font:11.5pt/1.55 Georgia,"Times New Roman",serif;color:#111;text-align:justify}
 .hoja h1{font:bold 12.5pt/1.3 Georgia,"Times New Roman",serif;text-align:center;margin:0 0 16pt;text-transform:uppercase}
 .hoja h2{font:bold 11.5pt Georgia,"Times New Roman",serif;text-align:center;margin:12pt 0 8pt}
@@ -422,7 +425,7 @@ function formEmpleado(e){
   const btn=h("button",{class:"pri",type:"submit"},nuevo?"Guardar empleado":"Guardar cambios");
   const sec=(t,...c)=>h("div",{class:"stack sec-form"},h("h3",null,t),h("div",{class:"cols3"},c));
   const form=h("form",{class:"stack",onsubmit:async ev=>{ev.preventDefault();
-    const d={};for(const k of Object.keys(I))d[k]=I[k].value.trim();d.salario=Math.abs(parseMonto(d.salario)||0);
+    const d={};for(const k of Object.keys(I))d[k]=I[k].value.trim();d.salario=Math.abs(parseMonto(d.salario)||0);d.auxilioNoSalarial=Math.abs(parseMonto(d.auxilioNoSalarial)||0);
     const mal=t=>{msg.hidden=false;msg.textContent=t;msg.scrollIntoView({block:"nearest"})};
     const req=[["primerNombre","el primer nombre"],["primerApellido","el primer apellido"],["documento","el número de documento"],["cargo","el cargo"],["fechaIngreso","la fecha de ingreso"]];
     for(const [k,l] of req)if(!d[k]){I[k].focus();return mal("Falta "+l+".")}
@@ -449,6 +452,7 @@ function formEmpleado(e){
       F("direccion","Dirección"),F("ciudadRes","Ciudad de residencia"),F("telefono","Teléfono"),F("correo","Correo",{type:"email"}))),
     sec("Contrato",F("cargo","Cargo",{req:1}),F("area","Área"),tipoC,F("fechaIngreso","Fecha de ingreso",{type:"date",req:1,def:hoy()}),cFin,
       F("salario","Salario mensual",{req:1,num:1,ph:String(p.smmlv),ayuda:nuevo?`Salario mínimo vigente: ${fmt(p.smmlv)}`:"Para un aumento usa Novedades → Cambio de salario: así queda la fecha desde la que rige."}),
+      F("auxilioNoSalarial","Auxilio no salarial fijo (mensual)",{num:1,ph:"0",ayuda:"Si cada quincena se le paga un auxilio no constitutivo de salario, escribe el valor del mes. Sale en el desprendible y no suma a salud ni pensión."}),
       F("lugarTrabajo","Lugar de trabajo",{ph:"Si se deja vacío, la sede de la empresa"}),F("jornada","Jornada u horario",{ph:"Opcional. Ej. lunes a viernes de 8 a. m. a 5 p. m."}),cObra),
     sec("Seguridad social",F("eps","EPS (salud)"),F("afp","Fondo de pensiones"),F("cesantias","Fondo de cesantías"),F("arl","ARL"),
       F("riesgo","Clase de riesgo ARL",{def:"1",sel:[["1","I · mínimo (oficina)"],["2","II · bajo"],["3","III · medio"],["4","IV · alto"],["5","V · máximo"]]}),F("caja","Caja de compensación")),
@@ -485,7 +489,7 @@ function fichaEmpleado(e){
       est.k==="activo"&&!e.fechaRetiro?h("button",{class:"danger",onclick:()=>{cerrar();retirar(e)}},"Retirar"):
       h("button",{onclick:ev=>confirmarEnPagina(ev.currentTarget,"Confirmar reintegro",async()=>{try{await S.db.doc("rh_empleados/"+e.id).update({fechaRetiro:"",motivoRetiro:"",updatedBy:S.uid,updatedAt:nowISO()});registrarActividad("Deshizo retiro de empleado",nombreEmp(e));cerrar();toast("El empleado vuelve a estar activo.")}catch(err){toast("No se pudo guardar.")}})},"Deshacer retiro")),
     h("dl",{class:"dl"},dd("Documento",`${(e.tipoDoc||"CC")} ${e.documento}${e.expedicion?" de "+e.expedicion:""}`),dd("Cargo",[e.cargo,e.area].filter(Boolean).join(" · ")),dd("Ingreso",fmtF(e.fechaIngreso)),
-      dd("Salario actual",fmt(sal)+(sal!==Number(e.salario)?` (ingresó con ${fmt(e.salario)})`:"")),dd("Retiro",e.fechaRetiro?`${fmtF(e.fechaRetiro)} · ${e.motivoRetiro||""}`:""),
+      dd("Salario actual",fmt(sal)+(sal!==Number(e.salario)?` (ingresó con ${fmt(e.salario)})`:"")),dd("Auxilio no salarial",Number(e.auxilioNoSalarial)>0?fmt(e.auxilioNoSalarial)+" al mes":""),dd("Retiro",e.fechaRetiro?`${fmtF(e.fechaRetiro)} · ${e.motivoRetiro||""}`:""),
       dd("Contacto",[e.telefono,e.correo,e.direccion,e.ciudadRes].filter(Boolean).join(" · ")),dd("Nacimiento",fmtF(e.fechaNacimiento)),
       dd("Seguridad social",[e.eps&&"EPS "+e.eps,e.afp&&"Pensión "+e.afp,e.cesantias&&"Cesantías "+e.cesantias,e.arl&&`ARL ${e.arl} (riesgo ${e.riesgo||1})`,e.caja&&"Caja "+e.caja].filter(Boolean).join(" · ")),
       dd("Pago",[e.banco,e.tipoCuenta,e.numeroCuenta].filter(Boolean).join(" · ")),dd("Registrado por",`${nombre(e.createdBy)} · ${fmtFH(e.createdAt)}`)),
@@ -585,15 +589,15 @@ VIEWS.rh_novedades={filtro:"",
 /* ---------- nómina quincenal ---------- */
 function desprendible(L,per){
   /* mismo formato del comprobante que ya usa la empresa: ingresos y deducciones con concepto, cantidad y valor */
-  const v=valores(null,{}),n0=x=>Number(x)||0,pesos=x=>x?"$"+numF.format(x):"-",otros=n0(L.desc)-n0(L.prest),hExtraV=n0(L.extras)-n0(L.vDom);
+  const v=valores(null,{}),n0=x=>Number(x)||0,pesos=x=>x?"$"+numF.format(x):"-",otros=n0(L.desc)-n0(L.prest),hExtraV=L.vExt!=null?n0(L.vExt):n0(L.extras)-n0(L.vDom);
   const dia=f=>`${+f.slice(8,10)} DE ${MESES[+f.slice(5,7)-1].toUpperCase()}`;
   const ing=[["Sueldo",L.diasTrab,L.basico],["Auxilio de Transporte",L.diasTrab,L.aux],["Auxilio no constitutivo de salario",L.dias,L.noSal],["Horas extras",n0(L.hExtra),hExtraV],["Horas ordinarias dominicales",n0(L.hDom),n0(L.vDom)],
       ...(L.ausPag?[["Vacaciones y licencias pagadas",L.diasPagados,L.ausPag]]:[]),...(L.incap?[["Incapacidades",L.diasIncap,L.incap]]:[]),...(L.comis?[["Comisiones y bonificaciones",1,L.comis]]:[])],
     ded=[["Fondo de Salud",L.dias,L.salud],["Fondo de Pensión",L.dias,L.pension],["Descuento préstamo",L.dias,n0(L.prest)],...(L.fsp?[["Fondo de solidaridad pensional",L.dias,L.fsp]]:[]),...(otros>0?[["Otros descuentos",1,otros]]:[])];
   const c3=x=>x?`<td>${escH(x[0])}</td><td class="v">${x[1]}</td><td class="v">${pesos(x[2])}</td>`:"<td></td><td></td><td></td>";
   const filas=Array.from({length:Math.max(ing.length,ded.length)},(_,i)=>`<tr>${c3(ing[i])}${c3(ded[i])}</tr>`).join("");
-  return `<div class="hoja" style="text-align:left"><p style="text-align:center;margin:0"><strong style="font-size:13pt">${escH(v.empresa)}</strong>${v.nit_empresa?`<br>NIT: ${escH(v.nit_empresa)}`:""}</p>
-<h1 style="margin:12pt 0">Comprobante de nómina</h1>
+  const logo=RH.empresa.logo?`<img src="${RH.empresa.logo}" alt="" style="max-width:150px;max-height:64px">`:"";
+  return `<div class="hoja" style="text-align:left;font-family:Arial,Helvetica,sans-serif"><table class="firmas" style="margin:0 0 6pt"><tr>${logo?`<td width="26%" style="vertical-align:middle">${logo}</td>`:""}<td style="text-align:center;vertical-align:middle"><strong style="font-size:12.5pt">${escH(String(v.empresa).toUpperCase())}</strong>${v.nit_empresa?`<br><strong>NIT: ${escH(v.nit_empresa)}</strong>`:""}<br><strong>COMPROBANTE DE NÓMINA</strong></td>${logo?`<td width="16%"></td>`:""}</tr></table>
 <table><tr><td width="32%"><strong>PERIODO DE PAGO:</strong></td><td>${dia(per.desde)} AL ${dia(per.hasta)} DE ${per.hasta.slice(0,4)}</td></tr>
 <tr><td><strong>NOMBRE:</strong></td><td>${escH(String(L.nombre).toUpperCase())}</td></tr>
 <tr><td><strong>IDENTIFICACIÓN:</strong></td><td>${escH(L.documento)}</td></tr>
@@ -739,13 +743,13 @@ VIEWS.rh_documentos={
 
 /* ---------- ajustes de recursos humanos ---------- */
 VIEWS.rh_ajustes={
-  mount(el){iniciar();this.lleno=false;
+  mount(el){iniciar();this.lleno=false;this.logoVisto=null;
     const E={},V={};this.E=E;this.V=V;
     const fe=(k,l,ph)=>campo(l,E[k]=h("input",{id:"aj-"+k,autocomplete:"off",placeholder:ph||null}));
     const memb=E.membrete=h("input",{type:"checkbox",id:"aj-membrete",checked:true});
     const bE=h("button",{class:"pri",type:"submit"},"Guardar datos de la empresa");
     const formE=h("form",{class:"stack",onsubmit:async ev=>{ev.preventDefault();bE.disabled=true;
-      const d={};for(const k of Object.keys(E))d[k]=k==="membrete"?memb.checked:E[k].value.trim();
+      const d={};for(const k of Object.keys(E))d[k]=k==="membrete"?memb.checked:E[k].value.trim();d.logo=RH.empresa.logo||"";
       try{await S.db.doc("rh_config/empresa").set({...d,actualizadoPor:S.uid,actualizadoEn:nowISO()});registrarActividad("Actualizó datos de la empresa para documentos","");toast("Datos de la empresa guardados.")}catch(e){toast("No se pudo guardar.")}bE.disabled=false}},
       h("div",{class:"cols3"},fe("razonSocial","Razón social","Nombre legal de la empresa"),fe("nit","NIT","900.123.456-7"),fe("direccion","Dirección"),fe("ciudad","Ciudad","Ej. Medellín"),fe("telefono","Teléfono"),
         fe("representante","Representante legal"),fe("documentoRep","Cédula del representante legal"),fe("firmante","Quien firma las cartas y certificados","Si se deja vacío, el representante legal"),fe("cargoFirmante","Cargo de quien firma","Representante legal")),
@@ -763,8 +767,19 @@ VIEWS.rh_ajustes={
     const cargar=()=>{ta.value=textoPlantilla(sel.value);prev.hidden=true;estado.textContent=RH.plantillas[sel.value]?.cuerpo?`Texto propio, guardado por ${nombre(RH.plantillas[sel.value].actualizadoPor)} el ${fmtFH(RH.plantillas[sel.value].actualizadoEn)}`:"Texto original de la app"};
     this.cargarPlantilla=cargar;this.ta=ta;
     const chips=h("div",{class:"campos-chips"},CAMPOS.map(([k,l])=>h("button",{type:"button",title:l,onclick:()=>{ta.focus();ta.setRangeText(`{{${k}}}`,ta.selectionStart,ta.selectionEnd,"end")}},l)));
+    /* logo: se guarda reducido dentro de los datos de la empresa y sale en desprendibles y documentos */
+    this.logoPrev=h("div",{class:"row"});
+    const logoIn=h("input",{type:"file",id:"aj-logo",accept:"image/png,image/jpeg,image/webp",onchange:async()=>{const f=logoIn.files[0];if(!f)return;
+      try{const img=await new Promise((ok,er)=>{const i=new Image();i.onload=()=>ok(i);i.onerror=er;i.src=URL.createObjectURL(f)});
+        const k=Math.min(1,400/img.width,160/img.height),c=document.createElement("canvas");c.width=Math.round(img.width*k);c.height=Math.round(img.height*k);c.getContext("2d").drawImage(img,0,0,c.width,c.height);
+        await S.db.doc("rh_config/empresa").set({...RH.empresa,logo:c.toDataURL("image/png"),actualizadoPor:S.uid,actualizadoEn:nowISO()});registrarActividad("Cambió el logo de la empresa","");toast("Logo guardado.")}
+      catch(e){toast("No se pudo guardar el logo.")}logoIn.value=""}});
+    this.pintarLogo=()=>this.logoPrev.replaceChildren(RH.empresa.logo?h("img",{src:RH.empresa.logo,alt:"Logo actual",style:"max-height:64px;max-width:200px;background:#fff;padding:6px;border:1px solid var(--line);border-radius:6px"}):h("span",{class:"small muted"},"Sin logo"),
+      h("label",{class:"f",for:"aj-logo"},RH.empresa.logo?"Cambiar logo":"Subir logo (PNG o JPG)",logoIn),
+      RH.empresa.logo?h("button",{class:"sm danger",onclick:ev=>confirmarEnPagina(ev.currentTarget,"Confirmar",async()=>{try{await S.db.doc("rh_config/empresa").set({...RH.empresa,logo:"",actualizadoPor:S.uid,actualizadoEn:nowISO()});toast("Logo quitado.")}catch(e){toast("No se pudo quitar.")}})},"Quitar logo"):null);
     el.append(h("div",null,h("h2",null,"Ajustes de Recursos Humanos"),h("div",{class:"small muted"},"Se configuran una sola vez y se usan en la nómina y en todos los documentos.")),
       h("div",{class:"card"},h("h3",null,"Datos de la empresa para los documentos"),formE),
+      h("div",{class:"card stack"},h("h3",{style:"margin:0"},"Logo de la empresa"),h("p",{class:"small muted",style:"margin:0"},"Sale en los desprendibles de nómina y en el encabezado de contratos y cartas."),this.logoPrev),
       h("div",{class:"card"},h("h3",null,"Valores legales del año"),h("p",{class:"small muted",style:"margin:0 0 10px"},"Vienen con los valores de 2026. Verifícalos con el decreto del Gobierno y actualízalos cada enero."),formV),
       h("div",{class:"card stack"},h("h3",{style:"margin:0"},"Plantillas de contratos y cartas"),
         h("p",{class:"small muted",style:"margin:0"},"Aquí pegas tu propio borrador. Donde va un dato del empleado o de la empresa, toca el botón del dato y la app pone el campo entre llaves, por ejemplo {{nombre}}. Una línea que empieza con # es el título, **texto** queda en negrilla y [[FIRMAS]] pone las firmas de empleador y trabajador ([[FIRMA_EMPRESA]], [[FIRMA_TRABAJADOR]] y [[RECIBIDO]] ponen una sola). Deja una línea en blanco entre párrafos."),
@@ -777,6 +792,7 @@ VIEWS.rh_ajustes={
     cargar();
   },
   refresh(){
+    if(RH.ok.cfg&&this.pintarLogo&&this.logoVisto!==RH.empresa.logo){this.logoVisto=RH.empresa.logo;this.pintarLogo()}
     if(this.lleno||!RH.ok.cfg)return;this.lleno=true;const p=P();
     for(const k of Object.keys(this.E)){if(k==="membrete")this.E[k].checked=RH.empresa.membrete!==false;else this.E[k].value=RH.empresa[k]||(k==="razonSocial"?nombreEmpresa():"")}
     for(const k of Object.keys(this.V))this.V[k].value=String(p[k]);
