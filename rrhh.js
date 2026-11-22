@@ -427,6 +427,84 @@ function paquete(e,tipos){
       h("button",{onclick:()=>{reg();descargarWord("Documentos de ingreso - "+nombreEmp(e).replace(/[\\/:*?"<>|]/g,""),ds.map(d=>d.html))}},"Descargar en Word"))),{ancho:900});
 }
 
+/* ---------- vacaciones: liquidación, constancia y paz y salvo ---------- */
+const dias360=(a,b)=>{const [y1,m1,d1]=a.split("-").map(Number),[y2,m2,d2]=b.split("-").map(Number);return (y2-y1)*360+(m2-m1)*30+(Math.min(d2,30)-Math.min(d1,30))+1};
+const addAnios=(f,n)=>`${+f.slice(0,4)+n}${f.slice(4)}`;
+const fechaDoc=f=>f?`${f.slice(8,10)} de ${MESES[+f.slice(5,7)-1]} de ${f.slice(0,4)}`:"";
+const fechaCorta=f=>f?`${f.slice(8,10)}/${f.slice(5,7)}/${f.slice(0,4)}`:"";
+const numDias=n=>new Intl.NumberFormat("es-CO",{maximumFractionDigits:2}).format(n);
+function docVacaciones(e,x){
+  const E=RH.empresa||{},v=valores(e,{}),cc=d=>d&&/^\d+$/.test(soloNum(d))?numF.format(Number(soloNum(d))):(d||"");
+  const pend=Math.max(0,Math.round((x.causados-x.comp-x.disf)*100)/100),anios=`${x.desde.slice(0,4)}–${x.hasta.slice(0,4)}`,n=k=>`${letras(k)} (${numDias(k)})`;
+  const tit=pend>0?"Constancia de otorgamiento y liquidación parcial de vacaciones":"Constancia de liquidación de vacaciones y paz y salvo";
+  const fila=(a,b,neg)=>`<tr><td>${neg?"<strong>":""}${escH(a)}${neg?"</strong>":""}</td><td>${neg?"<strong>":""}${b}${neg?"</strong>":""}</td></tr>`;
+  const cl=[];
+  if(x.comp>0)cl.push(`<strong>Compensación en dinero.</strong> A solicitud del trabajador, las partes acordaron compensar en dinero ${n(x.comp)} días hábiles de vacaciones, conforme al artículo 189 del Código Sustantivo del Trabajo. Por este concepto, la empresa pagó la suma de ${escH(pesosLetras(x.vComp))} ($${numF.format(x.vComp)}) el ${fechaDoc(x.fechaPago)}, según el comprobante de pago firmado por el trabajador.`);
+  if(x.disf>0)cl.push(`<strong>Disfrute en tiempo.</strong> El trabajador disfruta ${n(x.disf)} días hábiles de vacaciones en tiempo de descanso${x.disfDesde&&x.disfHasta?`, del ${fechaDoc(x.disfDesde)} al ${fechaDoc(x.disfHasta)}`:""}, por los cuales recibe la suma de ${escH(pesosLetras(x.vDisf))} ($${numF.format(x.vDisf)}).`);
+  const cubre=[x.comp>0&&`${n(x.comp)} días hábiles compensados`,x.disf>0&&`${n(x.disf)} días hábiles disfrutados`].filter(Boolean).join(" y los ");
+  cl.push(pend>0?`<strong>Paz y salvo.</strong> Con este pago, la empresa y el trabajador quedan a paz y salvo únicamente por los ${cubre} del período ${anios}.`
+    :`<strong>Paz y salvo.</strong> Con este pago, la empresa y el trabajador quedan a paz y salvo por la totalidad de las vacaciones causadas en el período ${anios}.`);
+  if(pend>0)cl.push(`<strong>Días pendientes.</strong> Quedan pendientes por disfrutar ${n(pend)} días hábiles del mismo período. Estos días se disfrutarán en tiempo de descanso, en la fecha que acuerden las partes y que la empresa informará por escrito con al menos quince (15) días de anticipación. No se pagarán en dinero, salvo a la terminación del contrato.`);
+  const firma=(nom,doc,...ls)=>`<td width="50%" style="vertical-align:top"><br><br><br><strong>${escH(String(nom||"").toUpperCase())}</strong><br>C.C. ${escH(cc(doc))}${ls.map(l=>"<br>"+escH(l)).join("")}</td>`;
+  const html=`<div class="hoja">${membrete(v)}<h1>${escH(tit)}</h1>
+<p>La <strong>${escH(String(v.empresa).toUpperCase())}</strong>${v.nit_empresa?`, identificada con NIT ${escH(v.nit_empresa)}`:""}, deja constancia del estado de las vacaciones de <strong>${escH(nombreEmp(e).toUpperCase())}</strong>, identificado(a) con C.C. ${escH(cc(e.documento))}, correspondientes al período laborado del ${fechaLarga(x.desde)} al ${fechaLarga(x.hasta)}, así:</p>
+<table><tr><th>Concepto</th><th>Detalle</th></tr>${fila("Fecha de ingreso",e.fechaIngreso?fechaLarga(e.fechaIngreso):"<mark>[Fecha de ingreso]</mark>")}${fila("Período causado",`${fechaCorta(x.desde)} al ${fechaCorta(x.hasta)}`)}
+${fila("Salario base",`$${numF.format(x.salario)}`)}${fila("Días hábiles de vacaciones causados",numDias(x.causados))}${fila("Días compensados en dinero",numDias(x.comp))}${fila("Días disfrutados en tiempo",numDias(x.disf))}${fila("Días pendientes por disfrutar",numDias(pend),true)}
+${x.comp>0?fila("Valor pagado por los días compensados",`$${numF.format(x.vComp)}`):""}${x.disf>0?fila("Valor pagado por los días disfrutados",`$${numF.format(x.vDisf)}`):""}${fila("Fecha de pago",fechaDoc(x.fechaPago))}</table>
+<ol style="margin:0 0 9pt 18pt;padding:0">${cl.map(c=>`<li style="margin:0 0 6pt">${c}</li>`).join("")}</ol>
+<p>Esta constancia no afecta las vacaciones que el trabajador cause a partir del ${fechaLarga(addDias(x.hasta,1))}.</p>
+<p>En señal de aceptación, se firma en ${escH(x.ciudad)} el ${fechaDoc(x.fechaPago)}, en dos (2) ejemplares del mismo valor, uno para cada parte.</p>
+<table class="firmas" width="100%"><tr>${firma(E.firmante||E.representante,E.firmante?"":E.documentoRep,E.cargoFirmante||"Representante legal","EL EMPLEADOR")}${firma(nombreEmp(e),e.documento,"EL TRABAJADOR")}</tr></table></div>`;
+  return {html,titulo:tit,pend};
+}
+function liquidarVacaciones(empId){
+  const I={},prev=h("div",{class:"papel"}),msg=h("div",{class:"small muted"}),aviso=h("div");let e=null,cerrar=null,ult=null;
+  const num=(id,val)=>h("input",{id,inputmode:"decimal",value:val??"",oninput:()=>calc()});
+  const empBox=h("div");
+  const ponerEmp=id=>{e=empPor(id)||null;I.emp=selEmp(id||"",false,v=>{ponerEmp(v);calc()},"vc-emp");empBox.replaceChildren(I.emp);
+    if(!e)return;let d="",hh="";
+    if(e.fechaIngreso){let k=0;while(addDias(addAnios(e.fechaIngreso,k+2),-1)<=hoy())k++;d=addAnios(e.fechaIngreso,k);hh=addDias(addAnios(d,1),-1);if(hh>hoy()&&k===0){hh=hoy()}}
+    I.desde.value=d;I.hasta.value=hh;I.salario.value=String(salarioEn(e,hh||hoy()));I.causados.value="";};
+  I.desde=h("input",{id:"vc-desde",type:"date",onchange:()=>{if(I.desde.value&&!I.hasta.value)I.hasta.value=addDias(addAnios(I.desde.value,1),-1);I.causados.value="";calc()}});
+  I.hasta=h("input",{id:"vc-hasta",type:"date",onchange:()=>{I.causados.value="";calc()}});
+  I.causados=num("vc-causados");I.comp=num("vc-comp","0");I.disf=num("vc-disf","0");I.salario=num("vc-salario");
+  I.disfDesde=h("input",{id:"vc-dd",type:"date",onchange:()=>calc()});I.disfHasta=h("input",{id:"vc-dh",type:"date",onchange:()=>calc()});
+  I.fechaPago=h("input",{id:"vc-pago",type:"date",value:hoy(),onchange:()=>calc()});I.ciudad=h("input",{id:"vc-ciudad",value:RH.empresa.ciudad||"Santa Marta",oninput:()=>calc()});
+  I.nov=h("input",{type:"checkbox",id:"vc-nov"});
+  const calc=()=>{aviso.replaceChildren();ult=null;
+    if(!e){prev.innerHTML="";msg.textContent="Elige el empleado.";return}
+    const desde=I.desde.value,hasta=I.hasta.value;if(!desde||!hasta||hasta<desde){prev.innerHTML="";msg.textContent=e.fechaIngreso?"Indica el período que se liquida.":"Este empleado no tiene fecha de ingreso en su ficha: escribe el período que se liquida.";return}
+    const d360=dias360(desde,hasta),auto=Math.round(d360/360*15*100)/100;
+    if(!I.causados.value)I.causados.placeholder=numDias(auto);
+    const causados=I.causados.value?Math.abs(parseMonto(I.causados.value)||0):auto,comp=Math.abs(parseMonto(I.comp.value)||0),disf=Math.abs(parseMonto(I.disf.value)||0);
+    const salario=Math.abs(parseMonto(I.salario.value)||0)||salarioEn(e,hasta),vd=salario/30;
+    if(comp+disf>causados){aviso.replaceChildren(h("div",{class:"status bad"},`Los días compensados y disfrutados (${numDias(comp+disf)}) suman más que los causados (${numDias(causados)}).`));prev.innerHTML="";return}
+    const x={desde,hasta,causados,comp,disf,salario,vComp:Math.round(vd*comp),vDisf:Math.round(vd*disf),disfDesde:I.disfDesde.value,disfHasta:I.disfHasta.value,fechaPago:I.fechaPago.value||hoy(),ciudad:I.ciudad.value.trim()||"Santa Marta"};
+    const d=docVacaciones(e,x);prev.innerHTML=d.html;ult={x,d};
+    msg.textContent=`${numDias(d360)} días laborados en el período → ${numDias(auto)} días hábiles causados (15 por año). Valor del día: ${fmt(Math.round(vd*100)/100)} (salario ÷ 30). Total a pagar: ${fmt(x.vComp+x.vDisf)}.`};
+  const registrar=async()=>{if(!ult)return;
+    try{await S.db.collection("rh_documentos").add({empleadoId:e.id,empleado:nombreEmp(e),tipo:"vacaciones",plantilla:"vacaciones",titulo:"Liquidación de vacaciones",campos:{...ult.x,pendientes:ult.d.pend},fecha:hoy(),mes:hoy().slice(0,7),createdBy:S.uid,createdAt:nowISO()});
+      registrarActividad("Liquidó vacaciones",`${nombreEmp(e)} · ${numDias(ult.x.comp)} compensados, ${numDias(ult.x.disf)} disfrutados · ${fmt(ult.x.vComp+ult.x.vDisf)}`);
+      if(I.nov.checked&&ult.x.disfDesde&&ult.x.disfHasta&&ult.x.disfHasta>=ult.x.disfDesde){await S.db.collection("rh_novedades").add({empleadoId:e.id,tipo:"vacaciones",desde:ult.x.disfDesde,hasta:ult.x.disfHasta,subtipo:"",horas:0,valor:0,detalle:`Vacaciones período ${ult.x.desde.slice(0,4)}–${ult.x.hasta.slice(0,4)}`,mes:ult.x.disfDesde.slice(0,7),anulado:false,createdBy:S.uid,createdAt:nowISO()});I.nov.checked=false}
+    }catch(err){console.warn("vacaciones",err)}};
+  const nombreArch=()=>`Vacaciones y paz y salvo - ${nombreEmp(e)}`.replace(/[\\/:*?"<>|]/g,"");
+  const f2=(a,b)=>h("div",{class:"row",style:"flex-wrap:nowrap"},h("div",{style:"flex:1"},a),h("div",{style:"flex:1"},b));
+  cerrar=abrirModal("Liquidar vacaciones",h("div",{class:"grid2",style:"align-items:start"},
+    h("div",{class:"stack"},campo("Empleado",empBox,true),
+      f2(campo("Período causado desde",I.desde,true),campo("Hasta",I.hasta,true)),
+      f2(campo("Días hábiles causados",I.causados,false,"Vacío = 15 por año, proporcional"),campo("Salario base mensual",I.salario,false,"Valor del día = salario ÷ 30")),
+      f2(campo("Días compensados en dinero",I.comp),campo("Días disfrutados en tiempo",I.disf)),
+      f2(campo("Disfruta desde (opcional)",I.disfDesde),campo("Hasta",I.disfHasta)),
+      f2(campo("Fecha de pago",I.fechaPago,true),campo("Ciudad de firma",I.ciudad)),
+      h("label",{class:"row small",for:"vc-nov",style:"gap:8px"},I.nov,"Registrar los días disfrutados como novedad de vacaciones (para la nómina y la planilla)"),
+      aviso,msg,
+      h("div",{class:"row"},h("button",{class:"pri",onclick:async()=>{if(!ult)return;await registrar();imprimir(nombreArch(),[ult.d.html])}},"Imprimir o guardar en PDF"),
+        h("button",{onclick:async()=>{if(!ult)return;await registrar();descargarWord(nombreArch(),[ult.d.html])}},"Descargar en Word"))),
+    h("div",{class:"stack"},h("h3",{style:"margin:0"},"Vista previa"),prev)),{ancho:1200});
+  ponerEmp(empId||"");calc();
+}
+window.rhLiquidarVacaciones=liquidarVacaciones;
+
 /* ---------- empleados ---------- */
 function formEmpleado(e){
   const I={},nuevo=!e,p=P();const msg=h("div",{class:"status bad",hidden:true});let cerrar=null;
@@ -502,7 +580,7 @@ function fichaEmpleado(e){
   const selDoc=h("select",{id:"fe-doc","aria-label":"Generar documento",style:"max-width:240px",onchange:ev=>{const t=ev.target.value;ev.target.value="";if(t){cerrar();generador(t,{empleadoId:e.id})}}},h("option",{value:""},"Generar documento…"),Object.entries(DOCS).map(([k,d])=>h("option",{value:k},d.l)));
   cerrar=abrirModal(nombreEmp(e),h("div",{class:"stack"},
     h("div",{class:"row"},est.chip,esServ(e)?h("span",{class:"chip info"},"Prestación de servicios"):h("span",{class:"chip neu"},CONTRATO_LBL[e.tipoContrato]||"Contrato"),e.tipoContrato==="fijo"&&e.fechaFin?h("span",{class:"chip info"},"Vence el "+fmtF(e.fechaFin)):null),
-    h("div",{class:"row"},h("button",{class:"pri",onclick:()=>{cerrar();formEmpleado(e)}},"Editar ficha"),h("button",{onclick:()=>{cerrar();modalNovedad(e.id)}},"Registrar novedad"),selDoc,
+    h("div",{class:"row"},h("button",{class:"pri",onclick:()=>{cerrar();formEmpleado(e)}},"Editar ficha"),h("button",{onclick:()=>{cerrar();modalNovedad(e.id)}},"Registrar novedad"),esServ(e)?null:h("button",{onclick:()=>{cerrar();liquidarVacaciones(e.id)}},"Liquidar vacaciones"),selDoc,
       est.k==="activo"&&!e.fechaRetiro?h("button",{class:"danger",onclick:()=>{cerrar();retirar(e)}},"Retirar"):
       h("button",{onclick:ev=>confirmarEnPagina(ev.currentTarget,"Confirmar reintegro",async()=>{try{await S.db.doc("rh_empleados/"+e.id).update({fechaRetiro:"",motivoRetiro:"",updatedBy:S.uid,updatedAt:nowISO()});registrarActividad("Deshizo retiro de empleado",nombreEmp(e));cerrar();toast("El empleado vuelve a estar activo.")}catch(err){toast("No se pudo guardar.")}})},"Deshacer retiro")),
     h("dl",{class:"dl"},dd("Documento",`${(e.tipoDoc||"CC")} ${e.documento}${e.expedicion?" de "+e.expedicion:""}`),dd("Cargo",[e.cargo,e.area].filter(Boolean).join(" · ")),dd("Ingreso",fmtF(e.fechaIngreso)),
@@ -752,7 +830,8 @@ VIEWS.rh_documentos={
     this.hist=h("div");
     el.append(h("div",null,h("h2",null,"Contratos y documentos"),h("div",{class:"small muted"},"Elige el documento, elige el empleado y la app lo llena con sus datos. Queda listo para imprimir, guardar en PDF o abrir en Word.")),
       h("div",{class:"card doc-card",style:"border-color:var(--accent)"},h("h3",null,"¿Ingresa alguien nuevo?"),h("p",{class:"muted"},"Crea al empleado y al guardar se generan su contrato y su autorización de datos, listos para firmar."),h("button",{class:"pri",onclick:()=>formEmpleado(null)},"Nuevo empleado")),
-      h("div",{class:"doc-grid"},Object.entries(DOCS).map(([k,d])=>h("div",{class:"card doc-card"},h("h3",null,d.l),h("p",{class:"small muted"},d.d),h("button",{id:"doc-"+k,onclick:()=>generador(k)},"Generar")))),
+      h("div",{class:"doc-grid"},h("div",{class:"card doc-card"},h("h3",null,"Liquidación de vacaciones y paz y salvo"),h("p",{class:"small muted"},"Eliges el empleado y el período; calcula los días causados, el valor de los días compensados o disfrutados y arma la constancia con el paz y salvo."),h("button",{id:"doc-vacaciones",onclick:()=>liquidarVacaciones("")},"Liquidar")),
+        Object.entries(DOCS).map(([k,d])=>h("div",{class:"card doc-card"},h("h3",null,d.l),h("p",{class:"small muted"},d.d),h("button",{id:"doc-"+k,onclick:()=>generador(k)},"Generar")))),
       h("div",{class:"card"},h("h3",null,"Documentos generados"),this.hist));
   },
   refresh(){

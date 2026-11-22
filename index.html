@@ -931,6 +931,25 @@ const conceptosPago=()=>cat().pagos.flatMap(g=>g.c?.length?g.c:[g.g]);
 const enLista=(v,l)=>{const n=norm(v);return n?l.find(x=>norm(x)===n)||null:null};
 const clienteDe=t=>{const n=norm(t);const c=cat().clientes.find(x=>norm(x.n)===n||(x.alias&&norm(x.alias)===n));return c?c.n:"DIRECTOS"};
 const pegado=s=>norm(s).replace(/[^a-z0-9]/g,"");
+/* Aprende de los ingresos ya clasificados: para cada descripción del banco (sin números), qué tercero y concepto se usaron.
+   Solo sugiere si casi siempre es el mismo (80 % o más, al menos 2 veces). Las transferencias genéricas no se sugieren. */
+const claveDescBanco=d=>norm(d).replace(/[0-9]/g,"").replace(/[^a-z ]/g," ").replace(/\s+/g," ").trim();
+const DESC_GENERICA=/nequi|suc virtual|consignacion|corresponsal|interbanc|transferencia/;
+function aprendizajeIngresos(){
+  const g=new Map();
+  for(const m of S.movs){if(!(m.valor>0))continue;const x=S.conc.byMov.get(m.id);if(!x||x.tipo!=="ingreso")continue;const r=x.rec;
+    if(!r||r.anulado||!r.tercero||norm(r.tercero)==="pendiente"||!r.descripcion)continue;const k=claveDescBanco(m.desc);if(!k||DESC_GENERICA.test(k))continue;
+    const o=g.get(k)||new Map(),kk=r.tercero.trim()+"|"+r.descripcion;o.set(kk,(o.get(kk)||0)+1);g.set(k,o)}
+  return g;
+}
+function sugerirIngreso(m,g){
+  const k=claveDescBanco(m.desc);if(!k||DESC_GENERICA.test(k))return null;
+  const o=g.get(k);if(o){const tot=[...o.values()].reduce((a,b)=>a+b,0),[kk,n]=[...o].sort((a,b)=>b[1]-a[1])[0];
+    if(n>=2&&n/tot>=0.8){const i=kk.indexOf("|");return {tercero:kk.slice(0,i),descripcion:kk.slice(i+1),base:`${n} de ${tot} veces con esta descripción del banco`}}}
+  const c=clientePorDescripcion(m.desc);if(!c)return null;
+  const cnt={};for(const r of S.ingresos)if(!r.anulado&&norm(r.tercero)===norm(c)&&r.descripcion)cnt[r.descripcion]=(cnt[r.descripcion]||0)+1;
+  const d=Object.entries(cnt).sort((a,b)=>b[1]-a[1])[0];return d?{tercero:c,descripcion:d[0],base:`cliente del catálogo; concepto usado ${d[1]} veces`}:null;
+}
 function clientePorDescripcion(desc){const d=pegado(desc);if(!d)return "";const c=cat().clientes.find(x=>[x.alias,x.n].some(a=>{const p=pegado(a);return p.length>=4&&d.includes(p)}));return c?c.n:""}
 async function guardarCatalogo(cambio){const c=cat();await S.db.doc("conc_config/catalogo").set({ingresos:c.ingresos,pagos:c.pagos,clientes:c.clientes,saldos:c.saldos,historico:c.historico,...cambio,actualizadoPor:S.uid,actualizadoEn:nowISO()})}
 /* saldo del banco al empezar un mes: parte del último saldo inicial escrito y suma los movimientos hasta ese mes */
@@ -1148,17 +1167,53 @@ VIEWS.ingresos={
       h("label",{class:"f",for:"i-file"},"Soporte (opcional, el del Drive)",fileIn),btn);
     this.I=I;
     this.cola=h("div");this.lista=h("div");this.dls=h("div");this.resumen=h("div",{class:"small muted"});
-    el.append(h("div",{class:"card"},h("div",{class:"row between",style:"margin-bottom:10px"},h("h2",null,"Ingresos del banco por clasificar"),h("span",{class:"small muted"},"Toca «Clasificar» y llena tercero y a qué corresponde.")),this.cola),
+    /* clasificación en grupo: se marcan varios ingresos del banco y se guardan de una vez con el mismo tercero y concepto */
+    this.sel=new Set();const G={};this.G=G;
+    G.tercero=h("input",{id:"g-tercero",list:"dl-terceros-i",autocomplete:"off",placeholder:"Tercero",style:"min-width:200px"});
+    G.desc=h("input",{id:"g-desc",list:"dl-desc-i",autocomplete:"off",placeholder:"A qué corresponde",style:"min-width:200px"});
+    G.info=h("strong");G.msg=h("span",{class:"small muted"});
+    G.btn=h("button",{class:"pri",onclick:()=>this.guardarGrupo()},"Guardar seleccionados");
+    G.bar=h("div",{class:"card stack",hidden:true,style:"position:sticky;top:8px;z-index:5;border-color:var(--accent)"},
+      h("div",{class:"row between"},G.info,h("button",{class:"sm",onclick:()=>{this.sel.clear();this.refresh()}},"Quitar selección")),
+      h("div",{class:"row"},campoG("Tercero",G.tercero),campoG("A qué corresponde",G.desc),h("div",{class:"stack",style:"gap:4px;align-self:end"},G.btn,G.msg)));
+    function campoG(l,el){return h("label",{class:"f",style:"flex:1;min-width:200px"},l,el)}
+    el.append(h("style",null,"tr.sel td{background:rgba(37,99,235,.09)}"),G.bar,h("div",{class:"card"},h("div",{class:"row between",style:"margin-bottom:10px"},h("h2",null,"Ingresos del banco por clasificar"),h("span",{class:"small muted"},"Toca «Clasificar» para uno solo, o marca varios y guárdalos juntos.")),this.cola),
       h("div",{class:"grid2"},h("div",{class:"card"},h("h2",null,"Registrar ingreso"),form),h("div",{class:"card"},h("h2",{id:"it",style:"margin-bottom:6px"},"Ingresos"),this.resumen,this.lista)),this.dls);
     if(S.prefill?.mov){const m=S.prefill.mov;S.prefill=null;setTimeout(()=>this.usarMov(m),0)}
   },
+  pintarBarra(cola){const G=this.G,l=cola.filter(m=>this.sel.has(m.id));G.bar.hidden=!l.length;
+    G.info.textContent=`${l.length} ${l.length===1?"ingreso marcado":"ingresos marcados"} · ${fmt(l.reduce((s,m)=>s+m.valor,0))}`;G.btn.textContent=`Guardar ${l.length} ${l.length===1?"ingreso":"ingresos"}`;
+    if(!l.length){G.tercero.value="";G.desc.value="";G.msg.textContent=""}},
+  async guardarGrupo(){const G=this.G,l=creditosSinClasificar().filter(m=>this.sel.has(m.id));
+    const tercero=G.tercero.value.trim(),d0=G.desc.value.trim(),descripcion=enLista(d0,cat().ingresos);
+    if(!l.length)return;if(!tercero){G.msg.textContent="Escribe el tercero.";G.tercero.focus();return}
+    if(!descripcion){G.msg.textContent="Elige de la lista a qué corresponde.";G.desc.focus();return}
+    G.btn.disabled=true;let n=0;const nit=nitDe(tercero);
+    for(const m of l){G.msg.textContent=`Guardando ${n+1} de ${l.length}…`;
+      try{await crearRegistro("ingreso",{fecha:m.fecha,valor:m.valor,tercero,nit,descripcion,detalle:"",movId:m.id,soporteId:null,soporteTipo:null,soporteNombre:null});n++;this.sel.delete(m.id)}catch(e){}}
+    G.btn.disabled=false;toast(n===l.length?`Se guardaron ${n} ingresos de ${tercero}.`:`Se guardaron ${n} de ${l.length}. Revisa los que quedaron marcados.`);
+    if(n===l.length){G.tercero.value="";G.desc.value=""}G.msg.textContent="";this.refresh()},
   refresh(){
     this.dls.replaceChildren(datalist("dl-terceros-i",uniq([...cat().clientes.map(c=>c.n),...terceros()])),datalist("dl-desc-i",descIngresos()));
     $("#it").textContent="Ingresos de "+mesNombre(S.mes);
-    const cola=creditosSinClasificar();
-    this.cola.replaceChildren(!S.loaded.banco?tablaVacia("Cargando…"):cola.length?h("div",{class:"tbl"},h("table",null,h("thead",null,h("tr",null,h("th",null,"Fecha"),h("th",null,"Descripción del banco"),h("th",{class:"v"},"Valor"),h("th",null,"Días esperando"),h("th",null,""))),
-      h("tbody",null,cola.map(m=>h("tr",null,h("td",null,fmtF(m.fecha)),h("td",null,m.desc||"—"),h("td",{class:"v pos"},fmt(m.valor)),h("td",null,String(Math.max(0,diasEntre(m.fecha,hoy())))),h("td",null,h("button",{class:"sm pri",onclick:()=>this.usarMov(m)},"Clasificar")))))))
-      :tablaVacia("No hay ingresos del banco pendientes por clasificar."));
+    const cola=creditosSinClasificar(),G=this.G,ids=new Set(cola.map(m=>m.id));
+    for(const id of [...this.sel])if(!ids.has(id))this.sel.delete(id);
+    const ap=aprendizajeIngresos(),sug=new Map(cola.map(m=>[m.id,sugerirIngreso(m,ap)]));
+    /* grupos sugeridos: mismo tercero y mismo concepto según lo aprendido */
+    const grupos=new Map();for(const m of cola){const s=sug.get(m.id);if(!s)continue;const k=s.tercero+"|"+s.descripcion;const g=grupos.get(k)||{...s,movs:[]};g.movs.push(m);grupos.set(k,g)}
+    const elegir=g=>{this.sel=new Set(g.movs.map(m=>m.id));G.tercero.value=g.tercero;G.desc.value=g.descripcion;G.msg.textContent="";this.refresh();G.bar.scrollIntoView({block:"nearest",behavior:"smooth"})};
+    const marcar=(m,on)=>{on?this.sel.add(m.id):this.sel.delete(m.id);
+      if(on&&this.sel.size===1&&!G.tercero.value){const s=sug.get(m.id);if(s){G.tercero.value=s.tercero;G.desc.value=s.descripcion}else G.tercero.value=clientePorDescripcion(m.desc)}
+      this.pintarBarra(cola)};
+    const todos=h("input",{type:"checkbox","aria-label":"Marcar todos",checked:cola.length&&this.sel.size===cola.length?true:null,onchange:e=>{e.target.checked?cola.forEach(m=>this.sel.add(m.id)):this.sel.clear();this.refresh()}});
+    this.cola.replaceChildren(...(!S.loaded.banco?[tablaVacia("Cargando…")]:cola.length?[
+      grupos.size?h("div",{class:"stack",style:"gap:6px;margin-bottom:12px"},h("div",{class:"small muted"},"Sugerencias según lo que ya has clasificado antes (las transferencias de Nequi y entre cuentas no se sugieren). Toca una para marcar esos ingresos, revisa y guarda:"),
+        h("div",{class:"row",style:"gap:6px"},[...grupos.values()].sort((a,b)=>b.movs.length-a.movs.length).map(g=>h("button",{class:"sm",title:`Aprendido: ${g.base}`,onclick:()=>elegir(g)},h("strong",null,g.tercero)," · ",g.descripcion,` · ${g.movs.length} ${g.movs.length===1?"ingreso":"ingresos"} · ${fmt(g.movs.reduce((s,m)=>s+m.valor,0))}`)))):null,
+      h("div",{class:"tbl"},h("table",null,h("thead",null,h("tr",null,h("th",null,todos),h("th",null,"Fecha"),h("th",null,"Descripción del banco"),h("th",{class:"v"},"Valor"),h("th",null,"Días esperando"),h("th",null,""))),
+      h("tbody",null,cola.map(m=>{const s=sug.get(m.id);return h("tr",{class:this.sel.has(m.id)?"sel":null},h("td",null,h("input",{type:"checkbox","aria-label":"Marcar",checked:this.sel.has(m.id)?true:null,onchange:e=>{marcar(m,e.target.checked);e.target.closest("tr").classList.toggle("sel",e.target.checked)}})),
+        h("td",null,fmtF(m.fecha)),h("td",null,m.desc||"—",s?h("div",{class:"small muted"},`Sugerido: ${s.tercero} · ${s.descripcion}`):null),h("td",{class:"v pos"},fmt(m.valor)),h("td",null,String(Math.max(0,diasEntre(m.fecha,hoy())))),h("td",null,h("button",{class:"sm pri",onclick:()=>this.usarMov(m)},"Clasificar")))}))))]
+      :[tablaVacia("No hay ingresos del banco pendientes por clasificar.")]));
+    this.pintarBarra(cola);
     const l=S.ingresos.filter(p=>p.mes===S.mes).sort((a,b)=>(b.fecha+b.createdAt).localeCompare(a.fecha+a.createdAt));
     const act=l.filter(p=>!p.anulado);
     this.resumen.textContent=`${act.length} ingresos · ${fmt(act.reduce((s,p)=>s+Number(p.valor),0))}`;
