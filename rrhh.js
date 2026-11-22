@@ -722,22 +722,35 @@ async function desprendiblePDF(L,per){
     pdf.addImage(c.toDataURL("image/jpeg",0.92),"JPEG",15,14,w,alto);return pdf.output("blob")}
   finally{el.remove()}
 }
-/* Nómina → Drive: «Nomina» / «10. Octubre» / carpeta de la quincena (la del 15 o la del 30) / un PDF por empleado */
+/* Nómina → Drive: 5. TALENTO HUMANO / 2026 / NOMINA / 10. OCTUBRE / «15 de Octubre» o «30 de Octubre» / carpeta del empleado / PDF */
+const tituloNombre=s=>String(s||"").toLowerCase().replace(/(^|\s)\S/g,c=>c.toUpperCase());
+function nombreCorto(n){const t=String(n||"").trim().split(/\s+/);return tituloNombre(t.length>=4?`${t[0]} ${t[t.length-2]}`:t.length===3?`${t[0]} ${t[1]}`:t.join(" "))}
+async function carpetaEmpleado(dq,L){
+  /* usa la carpeta que ya tenga su nombre («Emerson Gonzalez», «Jesús Camargo»…); si no hay, la crea con nombre y primer apellido */
+  const tok=s=>norm(s).split(/\s+/).filter(Boolean),mio=new Set(tok(L.nombre));let mejor=null,pts=0;
+  for await(const [n,x] of dq.entries())if(x.kind==="directory"){const t=tok(n),p=t.filter(w=>mio.has(w)).length;if(p>=Math.min(2,t.length)&&p>pts){mejor=x;pts=p}}
+  return mejor||dq.getDirectoryHandle(window.TES_DRIVE.limpia(nombreCorto(L.nombre)),{create:true});
+}
 function subirNominaDrive(per,filas){
-  const f=filas.filter(L=>L.neto>0||L.devengado>0);
+  const f=filas.filter(L=>L.neto>0||L.devengado>0),D=window.TES_DRIVE,Mes=tituloNombre(MESES[+per.mes.slice(5,7)-1]),ult=+per.hasta.slice(8,10);
   if(!f.length)return toast("No hay desprendibles en esta quincena.");
-  window.TES_DRIVE.dialogo({clave:"nomina",titulo:"Subir nómina a Drive",etiqueta:`Subir ${f.length} desprendibles`,
-    texto:`Se guardan los desprendibles de la ${per.nombre} (${f.length}) en PDF, en la carpeta del mes y dentro de la carpeta de la quincena ${per.q===1?"del 15":"del 30"}. Si ya estaban, se reemplazan por la versión actual.`,
-    ayudaCarpeta:"busca en Google Drive (G:) «Transiapp» → «5. Talento humano 2026» → «Nomina» y presiona «Seleccionar carpeta» y luego «Permitir».",
-    correr:async(raiz,av)=>{const D=window.TES_DRIVE,dMes=await D.mes(raiz,per.mes);
-      /* carpeta de la quincena: se reconoce por el número 15, o 30/31/28/29 */
+  const archivo=L=>D.limpia(`Nomina ${per.q}_Quincena ${Mes} ${nombreCorto(L.nombre)}`)+".pdf";
+  D.dialogo({clave:"nomina",titulo:"Subir nómina a Drive",etiqueta:`Subir ${f.length} desprendibles`,
+    texto:`Se guardan en PDF los desprendibles de la ${per.nombre} (${f.length}): NOMINA → mes → carpeta «${per.q===1?15:Math.min(ult,30)} de ${Mes}» → carpeta de cada empleado. Si un empleado ya tiene un desprendible subido a mano en esa carpeta, no se le agrega otro.`,
+    ayudaCarpeta:"en la izquierda toca «Acceso rápido» y elige «5. TALENTO HUMANO» (o en Google Drive G: → TRANSIAPP SAS → 5. TALENTO HUMANO); presiona «Seleccionar carpeta» y luego «Permitir». La app entra sola al año, a NOMINA y al mes.",
+    correr:async(raiz,av)=>{let base=await D.anio(raiz,per.mes.slice(0,4));base=await D.sub(base,"NOMINA",false)||base;
+      const dMes=await D.mes(base,per.mes);
+      /* carpeta de la quincena: se reconoce por el número 15, o 28/29/30/31 */
       let dq=null;for await(const [n,x] of dMes.entries())if(x.kind==="directory"){const nums=(n.match(/\d+/g)||[]).map(Number);
         if(per.q===1?nums.includes(15)&&!nums.some(v=>v>=28&&v<=31):nums.some(v=>v>=28&&v<=31)){dq=x;break}}
-      if(!dq)dq=await dMes.getDirectoryHandle(per.q===1?"15":"30",{create:true});
-      let ok=0,err=0;
-      for(const L of f){av(`Generando desprendible ${ok+err+1} de ${f.length}: ${L.nombre}`);
-        try{await D.escribir(dq,`Desprendible ${D.limpia(L.nombre)}.pdf`,await desprendiblePDF(L,per));ok++}catch(e){err++;console.warn("drive nomina",L.nombre,e)}}
-      return {errores:err,texto:`${per.nombre}: ${ok} desprendibles guardados en «${raiz.name} / ${dMes.name} / ${dq.name}»${err?`; ${err} no se pudieron guardar (vuelve a intentarlo)`:""}.`}}})
+      if(!dq)dq=await dMes.getDirectoryHandle(`${per.q===1?15:Math.min(ult,30)} de ${Mes}`,{create:true});
+      let ok=0,ya=0,err=0;
+      for(const L of f){av(`Generando desprendible ${ok+ya+err+1} de ${f.length}: ${L.nombre}`);
+        try{const de=await carpetaEmpleado(dq,L),nom=archivo(L);let otro=false;
+          for await(const [n,x] of de.entries())if(x.kind==="file"&&n!==nom&&/\.pdf$/i.test(n))otro=true;
+          if(otro){ya++;continue}
+          await D.escribir(de,nom,await desprendiblePDF(L,per));ok++}catch(e){err++;console.warn("drive nomina",L.nombre,e)}}
+      return {errores:err,texto:`${per.nombre}: ${ok} desprendibles guardados en «${dMes.name} / ${dq.name}»${ya?`; ${ya} empleados ya tenían su desprendible subido a mano`:""}${err?`; ${err} no se pudieron guardar (vuelve a intentarlo)`:""}.`}}})
 }
 VIEWS.rh_nomina={q:null,
   mount(el){iniciar();if(this.q==null)this.q=+hoy().slice(8,10)<=15?1:2;

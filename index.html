@@ -613,14 +613,19 @@ const TES_DRIVE={
     if(d){try{if(await d.queryPermission({mode:"readwrite"})==="granted"||await d.requestPermission({mode:"readwrite"})==="granted")return d}catch(e){}}
     d=await window.showDirectoryPicker({id:"tes-"+clave,mode:"readwrite"});await idbDriveSet(clave,d);return d},
   limpia:s=>String(s||"").replace(/[\\/:*?"<>|]/g,"-").replace(/\s+/g," ").trim().replace(/\.+$/,"")||"Sin nombre",
-  /* reutiliza la carpeta que ya exista aunque cambien mayúsculas o tildes */
-  async sub(dir,nombre){nombre=TES_DRIVE.limpia(nombre);const k=norm(nombre);
-    for await(const [n,x] of dir.entries())if(x.kind==="directory"&&norm(n)===k)return x;
-    return dir.getDirectoryHandle(nombre,{create:true})},
-  /* carpeta del mes: «10. Octubre», «11. Noviembre»… usa la que ya exista con ese número */
+  /* reutiliza la carpeta que ya exista aunque cambien mayúsculas, tildes o plurales (PAGO DE CUPL = PAGOS DE CUPL) */
+  clave:s=>norm(s).replace(/[^a-z0-9 ]/g," ").split(/\s+/).filter(Boolean).map(w=>w.length>3?w.replace(/e?s$/,""):w).join(" "),
+  async sub(dir,nombre,crear=true){nombre=TES_DRIVE.limpia(nombre);const k=TES_DRIVE.clave(nombre);
+    for await(const [n,x] of dir.entries())if(x.kind==="directory"&&TES_DRIVE.clave(n)===k)return x;
+    return crear?dir.getDirectoryHandle(nombre,{create:true}):null},
+  /* carpeta del año («2026»): si la elegida tiene carpetas por año entra a la del año (y la crea en enero); si no tiene, se queda en la elegida */
+  async anio(dir,anio){let hay=false;
+    for await(const [n,x] of dir.entries())if(x.kind==="directory"&&/^\s*(19|20)\d\d\s*$/.test(n)){hay=true;if(n.trim()===anio)return x}
+    return hay?dir.getDirectoryHandle(anio,{create:true}):dir},
+  /* carpeta del mes: «10. OCTUBRE», «11. NOVIEMBRE»… usa la que ya exista con ese número; si no, la crea igual */
   async mes(dir,mes){const m=+mes.slice(5,7);
     for await(const [n,x] of dir.entries())if(x.kind==="directory"){const r=n.match(/^\s*0?(\d{1,2})\s*[.\-_ ]/);if(r&&+r[1]===m)return x}
-    return dir.getDirectoryHandle(`${m}. ${MES_LARGO[m-1]}`,{create:true})},
+    return dir.getDirectoryHandle(`${m}. ${MES_LARGO[m-1].toUpperCase()}`,{create:true})},
   async existe(dir,nombre){try{await dir.getFileHandle(nombre);return true}catch(e){return false}},
   async escribir(dir,nombre,blob){const f=await dir.getFileHandle(nombre,{create:true});const w=await f.createWritable();await w.write(blob);await w.close()},
   /* ventana común: explica, muestra la carpeta elegida y corre la subida con avance */
@@ -647,15 +652,15 @@ async function subirSoportesDrive(){
     return {p,c,nombre:`${b}${n>1?` (${n})`:""}.${ext(p)}`}});
   TES_DRIVE.dialogo({clave:"pagos",titulo:"Subir soportes a Drive",etiqueta:`Subir ${l.length} soportes`,
     texto:`Se suben los soportes de los pagos de ${mesNombre(mes)} (${l.length}) a la carpeta del mes, en una carpeta por concepto, con el nombre «fecha - a quién se le pagó». Los que ya estén en Drive no se repiten.`,
-    ayudaCarpeta:"busca en Google Drive (G:) la carpeta «Transiapp» → «4. Soportes de pago» y presiona «Seleccionar carpeta» y luego «Permitir».",
-    correr:async(raiz,av)=>{const dMes=await TES_DRIVE.mes(raiz,mes),cache=new Map();let i=0,sub=0,ya=0,err=0;
+    ayudaCarpeta:"en la izquierda toca «Acceso rápido» y elige «4. SOPORTES DE PAGOS» (o en Google Drive G: → TRANSIAPP SAS → 4. SOPORTES DE PAGOS); presiona «Seleccionar carpeta» y luego «Permitir».",
+    correr:async(raiz,av)=>{const dAnio=await TES_DRIVE.anio(raiz,mes.slice(0,4)),dMes=await TES_DRIVE.mes(dAnio,mes),cache=new Map();let i=0,sub=0,ya=0,err=0;
       const carpeta=c=>{if(!cache.has(c))cache.set(c,TES_DRIVE.sub(dMes,c));return cache.get(c)};
       const uno=async t=>{try{const d=await carpeta(t.c);if(await TES_DRIVE.existe(d,t.nombre)){ya++;return}
         const u=await window.TES_URL_SOPORTE(t.p.soporteId);if(!u)throw new Error("sin enlace");const r=await fetch(u);if(!r.ok)throw new Error("descarga "+r.status);
         await TES_DRIVE.escribir(d,t.nombre,await r.blob());sub++}catch(e){err++;console.warn("drive",t.nombre,e)}
         av(`Subiendo… ${sub+ya+err} de ${plan.length}`)};
       await Promise.all(Array.from({length:4},async()=>{while(i<plan.length)await uno(plan[i++])}));
-      return {errores:err,texto:`${mesNombre(mes)} en «${raiz.name} / ${dMes.name}»: ${sub} subidos${ya?`, ${ya} ya estaban`:""}${err?`, ${err} no se pudieron subir (vuelve a intentarlo)`:""}.`}}})
+      return {errores:err,texto:`${mesNombre(mes)} en «${raiz.name}${dAnio!==raiz?" / "+dAnio.name:""} / ${dMes.name}»: ${sub} subidos${ya?`, ${ya} ya estaban`:""}${err?`, ${err} no se pudieron subir (vuelve a intentarlo)`:""}.`}}})
 }
 async function pdfAImagen(file){
   const base="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/";
