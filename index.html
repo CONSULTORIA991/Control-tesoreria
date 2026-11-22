@@ -599,6 +599,64 @@ function suscribirMes(){
 /* ---------- archivos ---------- */
 const scriptsCargados={};
 function cargarScript(src){return scriptsCargados[src]||(scriptsCargados[src]=new Promise((ok,ko)=>{const s=document.createElement("script");s.src=src;s.onload=ok;s.onerror=()=>ko(new Error("No cargó "+src));document.head.append(s)}))}
+
+/* ---------- Google Drive del escritorio: la app escribe directo en la carpeta de Drive del computador (Chrome/Edge) ---------- */
+function idbDrive(){return new Promise((ok,ko)=>{const r=indexedDB.open("tes-drive",1);r.onupgradeneeded=()=>r.result.createObjectStore("h");r.onsuccess=()=>ok(r.result);r.onerror=()=>ko(r.error)})}
+async function idbDriveGet(k){try{const db=await idbDrive();return await new Promise(ok=>{const q=db.transaction("h").objectStore("h").get(k);q.onsuccess=()=>ok(q.result||null);q.onerror=()=>ok(null)})}catch(e){return null}}
+async function idbDriveSet(k,v){try{const db=await idbDrive();await new Promise(ok=>{const t=db.transaction("h","readwrite");t.objectStore("h").put(v,k);t.oncomplete=ok;t.onerror=ok})}catch(e){}}
+const MES_LARGO=["Enero","Febrero","Marzo","Abril","Mayo","Junio","Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"];
+const TES_DRIVE={
+  soportado:()=>typeof window.showDirectoryPicker==="function",
+  guardada:async clave=>(await idbDriveGet(clave))?.name||"",
+  /* carpeta elegida una sola vez; las siguientes veces solo pide confirmar el permiso */
+  async carpeta(clave,cambiar){let d=cambiar?null:await idbDriveGet(clave);
+    if(d){try{if(await d.queryPermission({mode:"readwrite"})==="granted"||await d.requestPermission({mode:"readwrite"})==="granted")return d}catch(e){}}
+    d=await window.showDirectoryPicker({id:"tes-"+clave,mode:"readwrite"});await idbDriveSet(clave,d);return d},
+  limpia:s=>String(s||"").replace(/[\\/:*?"<>|]/g,"-").replace(/\s+/g," ").trim().replace(/\.+$/,"")||"Sin nombre",
+  /* reutiliza la carpeta que ya exista aunque cambien mayúsculas o tildes */
+  async sub(dir,nombre){nombre=TES_DRIVE.limpia(nombre);const k=norm(nombre);
+    for await(const [n,x] of dir.entries())if(x.kind==="directory"&&norm(n)===k)return x;
+    return dir.getDirectoryHandle(nombre,{create:true})},
+  /* carpeta del mes: «10. Octubre», «11. Noviembre»… usa la que ya exista con ese número */
+  async mes(dir,mes){const m=+mes.slice(5,7);
+    for await(const [n,x] of dir.entries())if(x.kind==="directory"){const r=n.match(/^\s*0?(\d{1,2})\s*[.\-_ ]/);if(r&&+r[1]===m)return x}
+    return dir.getDirectoryHandle(`${m}. ${MES_LARGO[m-1]}`,{create:true})},
+  async existe(dir,nombre){try{await dir.getFileHandle(nombre);return true}catch(e){return false}},
+  async escribir(dir,nombre,blob){const f=await dir.getFileHandle(nombre,{create:true});const w=await f.createWritable();await w.write(blob);await w.close()},
+  /* ventana común: explica, muestra la carpeta elegida y corre la subida con avance */
+  async dialogo({clave,titulo,texto,etiqueta,ayudaCarpeta,correr}){
+    if(!TES_DRIVE.soportado())return toast("Esto funciona en Google Chrome o Microsoft Edge, en el computador que tiene Google Drive instalado.");
+    const guard=await TES_DRIVE.guardada(clave);
+    const info=h("div",{class:"small muted"},guard?`Carpeta de Drive: «${guard}».`:`La primera vez te pide elegir la carpeta: ${ayudaCarpeta}`);
+    const est=h("div",{class:"status",hidden:true});let cambiar=false;
+    const btn=h("button",{class:"pri",onclick:async()=>{let dir;try{dir=await TES_DRIVE.carpeta(clave,cambiar)}catch(e){if(e?.name!=="AbortError")toast("No se pudo abrir la carpeta.");return}
+      info.textContent=`Carpeta de Drive: «${dir.name}».`;btn.disabled=true;cb.hidden=true;est.hidden=false;est.className="status info";
+      try{const r=await correr(dir,t=>{est.textContent=t});est.className=r.errores?"status warn":"status ok";est.textContent=r.texto;btn.textContent="Listo";registrarActividad("Subió a Drive",r.texto)}
+      catch(e){est.className="status bad";est.textContent="Se detuvo: "+(e?.message||e);btn.disabled=false}}},etiqueta);
+    const cb=h("button",{type:"button",hidden:!guard,onclick:()=>{cambiar=true;info.textContent="Al subir te pedirá elegir otra carpeta: "+ayudaCarpeta;cb.hidden=true}},"Cambiar carpeta");
+    abrirModal(titulo,h("div",{class:"stack"},h("p",{style:"margin:0"},texto),info,h("div",{class:"row"},btn,cb),est,
+      h("div",{class:"small muted"},"Google Drive para escritorio sube los archivos a la nube solo; si son muchos tarda unos minutos en verse en drive.google.com.")),{ancho:560})}
+};
+window.TES_DRIVE=TES_DRIVE;
+async function subirSoportesDrive(){
+  const mes=S.mes;const ext=p=>String(p.soporteId).split(".").pop();
+  const l=S.pagos.filter(p=>p.mes===mes&&!p.anulado&&p.soporteId).sort((a,b)=>(a.fecha+a.id).localeCompare(b.fecha+b.id));
+  if(!l.length)return toast("No hay pagos con soporte en "+mesNombre(mes)+".");
+  /* nombre: fecha - a quién se le pagó; si se repite el mismo día se numera (2), (3)… */
+  const usados=new Map(),plan=l.map(p=>{const c=TES_DRIVE.limpia(p.concepto||"SIN CONCEPTO").toUpperCase(),b=`${p.fecha} - ${TES_DRIVE.limpia(p.tercero||"Sin tercero")}`,k=c+"|"+norm(b),n=(usados.get(k)||0)+1;usados.set(k,n);
+    return {p,c,nombre:`${b}${n>1?` (${n})`:""}.${ext(p)}`}});
+  TES_DRIVE.dialogo({clave:"pagos",titulo:"Subir soportes a Drive",etiqueta:`Subir ${l.length} soportes`,
+    texto:`Se suben los soportes de los pagos de ${mesNombre(mes)} (${l.length}) a la carpeta del mes, en una carpeta por concepto, con el nombre «fecha - a quién se le pagó». Los que ya estén en Drive no se repiten.`,
+    ayudaCarpeta:"busca en Google Drive (G:) la carpeta «Transiapp» → «4. Soportes de pago» y presiona «Seleccionar carpeta» y luego «Permitir».",
+    correr:async(raiz,av)=>{const dMes=await TES_DRIVE.mes(raiz,mes),cache=new Map();let i=0,sub=0,ya=0,err=0;
+      const carpeta=c=>{if(!cache.has(c))cache.set(c,TES_DRIVE.sub(dMes,c));return cache.get(c)};
+      const uno=async t=>{try{const d=await carpeta(t.c);if(await TES_DRIVE.existe(d,t.nombre)){ya++;return}
+        const u=await window.TES_URL_SOPORTE(t.p.soporteId);if(!u)throw new Error("sin enlace");const r=await fetch(u);if(!r.ok)throw new Error("descarga "+r.status);
+        await TES_DRIVE.escribir(d,t.nombre,await r.blob());sub++}catch(e){err++;console.warn("drive",t.nombre,e)}
+        av(`Subiendo… ${sub+ya+err} de ${plan.length}`)};
+      await Promise.all(Array.from({length:4},async()=>{while(i<plan.length)await uno(plan[i++])}));
+      return {errores:err,texto:`${mesNombre(mes)} en «${raiz.name} / ${dMes.name}»: ${sub} subidos${ya?`, ${ya} ya estaban`:""}${err?`, ${err} no se pudieron subir (vuelve a intentarlo)`:""}.`}}})
+}
 async function pdfAImagen(file){
   const base="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/";
   await cargarScript(base+"pdf.worker.min.js"); await cargarScript(base+"pdf.min.js");
@@ -1094,7 +1152,7 @@ VIEWS.pagos={busca:"",
     const busca=h("input",{id:"p-busca",type:"search",placeholder:"Buscar tercero o concepto",style:"max-width:260px",oninput:e=>{this.busca=e.target.value;this.refresh()}});
     this.movBox=h("div");
     el.append(h("div",{class:"card stack"},h("div",{class:"row between"},h("h2",null,"Registrar pagos"),h("button",{type:"button",onclick:()=>conceptoSinSoporte(null)},"Registrar pago sin comprobante")),this.movBox,zona,this.loteBox,this.msg,this.acciones),
-      h("div",{class:"card"},h("div",{class:"row between",style:"margin-bottom:12px"},h("h2",{id:"pt"},"Pagos"),busca),this.resumen,this.lista),this.dls);
+      h("div",{class:"card"},h("div",{class:"row between",style:"margin-bottom:12px"},h("h2",{id:"pt"},"Pagos"),h("div",{class:"row"},busca,["admin","pagos"].includes(miRol())?h("button",{type:"button",onclick:()=>subirSoportesDrive()},"Subir soportes a Drive"):null)),this.resumen,this.lista),this.dls);
     if(S.prefill?.mov){this.movPendiente=S.prefill.mov;S.prefill=null;
       this.movBox.replaceChildren(h("div",{class:"status info"},`Sube el comprobante de la salida del banco del ${fmtF(this.movPendiente.fecha)} · ${this.movPendiente.desc||""} · ${fmt(this.movPendiente.valor)}`))}
   },

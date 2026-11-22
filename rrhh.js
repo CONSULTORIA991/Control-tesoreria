@@ -711,6 +711,34 @@ function desprendible(L,per){
 <tr><th colspan="5" style="text-align:right">NETO A PAGAR</th><th class="v">$${numF.format(L.neto)}</th></tr></table>
 <table class="firmas" width="100%"><tr><td width="50%"><br><br>______________________________<br><strong>${escH(L.nombre)}</strong><br>Recibí conforme</td><td></td></tr></table></div>`;
 }
+/* desprendible en PDF (para guardarlo en Drive sin pasar por la ventana de imprimir) */
+async function desprendiblePDF(L,per){
+  await cargarScript("https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js");
+  await cargarScript("https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js");
+  /* se dibuja con el ancho útil de una hoja carta (720 px ≈ 18,6 cm) detrás de la app y se pasa al PDF a ese ancho */
+  const el=h("div",{style:"position:fixed;left:0;top:0;width:720px;background:#fff;color:#111;z-index:-1;pointer-events:none"});el.innerHTML=desprendible(L,per);document.body.append(el);
+  try{const c=await window.html2canvas(el,{scale:2,backgroundColor:"#ffffff",width:720,windowWidth:720,logging:false});
+    const pdf=new window.jspdf.jsPDF({unit:"mm",format:"letter",orientation:"portrait"}),w=186,alto=Math.min(c.height*w/c.width,250);
+    pdf.addImage(c.toDataURL("image/jpeg",0.92),"JPEG",15,14,w,alto);return pdf.output("blob")}
+  finally{el.remove()}
+}
+/* Nómina → Drive: «Nomina» / «10. Octubre» / carpeta de la quincena (la del 15 o la del 30) / un PDF por empleado */
+function subirNominaDrive(per,filas){
+  const f=filas.filter(L=>L.neto>0||L.devengado>0);
+  if(!f.length)return toast("No hay desprendibles en esta quincena.");
+  window.TES_DRIVE.dialogo({clave:"nomina",titulo:"Subir nómina a Drive",etiqueta:`Subir ${f.length} desprendibles`,
+    texto:`Se guardan los desprendibles de la ${per.nombre} (${f.length}) en PDF, en la carpeta del mes y dentro de la carpeta de la quincena ${per.q===1?"del 15":"del 30"}. Si ya estaban, se reemplazan por la versión actual.`,
+    ayudaCarpeta:"busca en Google Drive (G:) «Transiapp» → «5. Talento humano 2026» → «Nomina» y presiona «Seleccionar carpeta» y luego «Permitir».",
+    correr:async(raiz,av)=>{const D=window.TES_DRIVE,dMes=await D.mes(raiz,per.mes);
+      /* carpeta de la quincena: se reconoce por el número 15, o 30/31/28/29 */
+      let dq=null;for await(const [n,x] of dMes.entries())if(x.kind==="directory"){const nums=(n.match(/\d+/g)||[]).map(Number);
+        if(per.q===1?nums.includes(15)&&!nums.some(v=>v>=28&&v<=31):nums.some(v=>v>=28&&v<=31)){dq=x;break}}
+      if(!dq)dq=await dMes.getDirectoryHandle(per.q===1?"15":"30",{create:true});
+      let ok=0,err=0;
+      for(const L of f){av(`Generando desprendible ${ok+err+1} de ${f.length}: ${L.nombre}`);
+        try{await D.escribir(dq,`Desprendible ${D.limpia(L.nombre)}.pdf`,await desprendiblePDF(L,per));ok++}catch(e){err++;console.warn("drive nomina",L.nombre,e)}}
+      return {errores:err,texto:`${per.nombre}: ${ok} desprendibles guardados en «${raiz.name} / ${dMes.name} / ${dq.name}»${err?`; ${err} no se pudieron guardar (vuelve a intentarlo)`:""}.`}}})
+}
 VIEWS.rh_nomina={q:null,
   mount(el){iniciar();if(this.q==null)this.q=+hoy().slice(8,10)<=15?1:2;
     this.qs=h("div",{class:"filters"});this.box=h("div",{class:"stack"});
@@ -742,6 +770,7 @@ VIEWS.rh_nomina={q:null,
           h("td",{class:"v"},fmt(L.devengado)),h("td",{class:"v neg"},fmt(L.salud+L.pension+L.fsp)),h("td",{class:"v neg"},fmt(L.desc)),h("td",{class:"v"},h("strong",null,fmt(L.neto)))))),
         h("tfoot",null,h("tr",null,h("th",null,"Total"),h("th",null,""),h("th",{class:"v"},fmt(T("basico"))),h("th",{class:"v"},fmt(T("aux"))),h("th",{class:"v"},fmt(T("extras"))),h("th",{class:"v"},fmt(T("ausPag")+T("incap")+T("comis")+T("noSal"))),h("th",{class:"v"},fmt(T("devengado"))),h("th",{class:"v"},fmt(T("salud")+T("pension")+T("fsp"))),h("th",{class:"v"},fmt(T("desc"))),h("th",{class:"v"},fmt(T("neto")))))))),
       h("div",{class:"row"},h("button",{class:"pri",onclick:aExcel},"Descargar nómina en Excel"),h("button",{onclick:()=>imprimir("Desprendibles de nómina "+per.id,f.map(L=>desprendible(L,per)))},"Desprendibles de todos (imprimir o PDF)"),
+        h("button",{onclick:()=>subirNominaDrive(per,f)},"Subir a Drive"),
         N.cerrada?(esAdmin()&&!N.doc.enviada?h("button",{onclick:aConciliacion},"Enviar pagos a Conciliación"):null):h("button",{onclick:ev=>confirmarEnPagina(ev.currentTarget,"Confirmar cierre",cerrar)},"Cerrar quincena")),
       h("div",{class:"small muted"},`Valores usados: salario mínimo ${fmt(p.smmlv)}, auxilio de transporte ${fmt(p.auxTransporte)} (para salarios hasta 2 mínimos), salud 4 % y pensión 4 % a cargo del empleado. Se cambian en Ajustes. La retención en la fuente y la liquidación de prestaciones no se calculan aquí.`));
   }
