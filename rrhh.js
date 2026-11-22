@@ -505,6 +505,66 @@ function liquidarVacaciones(empId){
 }
 window.rhLiquidarVacaciones=liquidarVacaciones;
 
+/* ---------- entrega de dotación (art. 230 CST): 3 entregas al año, cada una cubre un cuatrimestre ---------- */
+const PRENDAS_DOT=["Camisa","Buzo","Pantalón","Zapatos"];
+/* fin del cuatrimestre que contiene la fecha: 30 de abril, 31 de agosto o 31 de diciembre */
+const finCuatrimestre=f=>{const y=f.slice(0,4),m=+f.slice(5,7);return m<=4?`${y}-04-30`:m<=8?`${y}-08-31`:`${y}-12-31`};
+const inicioCuatrimestre=f=>{const y=f.slice(0,4),m=+f.slice(5,7);return m<=4?`${y}-01-01`:m<=8?`${y}-05-01`:`${y}-09-01`};
+function docDotacion(e,x){
+  const E=RH.empresa||{},v=valores(e,{}),cc=d=>d&&/^\d+$/.test(soloNum(d))?numF.format(Number(soloNum(d))):(d||"");
+  const firma=(nom,doc,...ls)=>`<td width="50%" style="vertical-align:top"><br><br><br>______________________________<br><strong>${escH(String(nom||"").toUpperCase())}</strong><br>C.C. ${escH(cc(doc))}${ls.map(l=>"<br>"+escH(l)).join("")}</td>`;
+  const filas=x.items.map(it=>`<tr><td>${escH(it.prenda)}</td><td class="v">${escH(String(it.cantidad))}</td><td>${escH(it.talla||"")}</td></tr>`).join("");
+  const html=`<div class="hoja">${membrete(v)}<h1>Constancia de entrega de dotación</h1>
+<p>La <strong>${escH(String(v.empresa).toUpperCase())}</strong>${v.nit_empresa?`, identificada con NIT ${escH(v.nit_empresa)}`:""}, en cumplimiento del artículo 230 del Código Sustantivo del Trabajo, hace entrega de la dotación de calzado y vestido de labor a <strong>${escH(nombreEmp(e).toUpperCase())}</strong>, identificado(a) con C.C. ${escH(cc(e.documento))}${e.cargo?`, quien desempeña el cargo de ${escH(String(e.cargo).toUpperCase())}`:""}, así:</p>
+<table><tr><th>Fecha de entrega</th><td>${fechaDoc(x.fecha)}</td></tr><tr><th>Período que cubre</th><td>Del ${fechaDoc(x.desde)} al ${fechaDoc(x.hasta)}</td></tr></table>
+<table><tr><th>Prenda</th><th class="v" width="18%">Cantidad</th><th width="28%">Talla</th></tr>${filas}</table>
+${x.obs?`<p><strong>Observaciones:</strong> ${escH(x.obs)}</p>`:""}
+<p>El trabajador declara que recibe la dotación descrita a entera satisfacción, nueva, en buen estado y en las tallas solicitadas. Se compromete a usarla durante la jornada de trabajo en las labores contratadas y a cuidarla, de acuerdo con el artículo 233 del Código Sustantivo del Trabajo: si no la usa en sus labores, el empleador queda eximido de entregarla en el período siguiente.</p>
+<p>Con esta entrega la empresa queda a paz y salvo con el trabajador por concepto de dotación del período indicado.</p>
+<p>Para constancia se firma en ${escH(x.ciudad)} el ${fechaDoc(x.fecha)}.</p>
+<table class="firmas" width="100%"><tr>${firma(E.firmante||E.representante,E.firmante?"":E.documentoRep,E.cargoFirmante||"Representante legal","EL EMPLEADOR")}${firma(nombreEmp(e),e.documento,"EL TRABAJADOR","Recibí a satisfacción")}</tr></table></div>`;
+  return {html,titulo:"Entrega de dotación"};
+}
+function entregaDotacion(empId){
+  const I={},prev=h("div",{class:"papel"}),msg=h("div",{class:"small muted"}),empBox=h("div"),filasBox=h("div",{class:"stack",style:"gap:6px"});let e=null,ult=null,cerrar=null,items=[];
+  const fila=(prenda,cantidad,talla)=>{const r={P:h("input",{value:prenda,placeholder:"Prenda","aria-label":"Prenda",style:"flex:1;min-width:0",oninput:()=>calc()}),C:h("input",{value:cantidad,inputmode:"numeric","aria-label":"Cantidad",title:"Cantidad",style:"width:64px;min-width:0;flex:none",oninput:()=>calc()}),T:h("input",{value:talla||"",placeholder:"Talla","aria-label":"Talla",style:"width:90px;min-width:0;flex:none",oninput:()=>calc()})};
+    r.el=h("div",{class:"row",style:"flex-wrap:nowrap;gap:6px"},r.P,r.C,r.T,h("button",{type:"button",class:"sm",title:"Quitar",onclick:()=>{items=items.filter(y=>y!==r);r.el.remove();calc()}},"✕"));items.push(r);filasBox.append(r.el);return r};
+  const ponerEmp=id=>{e=empPor(id)||null;empBox.replaceChildren(selEmp(id||"",false,v=>{ponerEmp(v);calc()},"dt-emp"));
+    items=[];filasBox.replaceChildren();if(!e)return;
+    /* tallas y prendas de la última entrega de ese empleado */
+    const ant=(RH.docs||[]).filter(d=>d.tipo==="dotacion"&&d.empleadoId===e.id).sort((a,b)=>String(b.createdAt).localeCompare(String(a.createdAt)))[0]?.campos?.items;
+    (ant?.length?ant:PRENDAS_DOT.map(p=>({prenda:p,cantidad:1,talla:""}))).forEach(it=>fila(it.prenda,String(it.cantidad),it.talla));
+    /* período: desde el inicio del cuatrimestre de la entrega (o la fecha de ingreso si entró después) hasta el fin del cuatrimestre */
+    const f=I.fecha.value||hoy(),ini=inicioCuatrimestre(f);I.desde.value=e.fechaIngreso&&e.fechaIngreso>ini?e.fechaIngreso:ini;I.hasta.value=finCuatrimestre(I.desde.value)};
+  I.fecha=h("input",{id:"dt-fecha",type:"date",value:hoy(),onchange:()=>calc()});
+  I.desde=h("input",{id:"dt-desde",type:"date",onchange:()=>{if(I.desde.value)I.hasta.value=finCuatrimestre(I.desde.value);calc()}});
+  I.hasta=h("input",{id:"dt-hasta",type:"date",onchange:()=>calc()});
+  I.obs=h("input",{id:"dt-obs",placeholder:"Opcional",oninput:()=>calc()});I.ciudad=h("input",{id:"dt-ciudad",value:RH.empresa.ciudad||"Santa Marta",oninput:()=>calc()});
+  const calc=()=>{ult=null;if(!e){prev.innerHTML="";msg.textContent="Elige el empleado.";return}
+    const its=items.map(r=>({prenda:r.P.value.trim(),cantidad:Math.max(0,parseInt(soloNum(r.C.value))||0),talla:r.T.value.trim()})).filter(it=>it.prenda&&it.cantidad>0);
+    if(!I.desde.value||!I.hasta.value||I.hasta.value<I.desde.value){prev.innerHTML="";msg.textContent="Indica el período que cubre la dotación.";return}
+    if(!its.length){prev.innerHTML="";msg.textContent="Escribe al menos una prenda con su cantidad.";return}
+    const x={fecha:I.fecha.value||hoy(),desde:I.desde.value,hasta:I.hasta.value,items:its,obs:I.obs.value.trim(),ciudad:I.ciudad.value.trim()||"Santa Marta"};
+    const d=docDotacion(e,x);prev.innerHTML=d.html;ult={x,d};
+    msg.textContent=`La ley pide 3 entregas al año (a más tardar el 30 de abril, el 31 de agosto y el 20 de diciembre) para quien gana hasta 2 salarios mínimos; cada una cubre su cuatrimestre. Esta cubre del ${fechaCorta(x.desde)} al ${fechaCorta(x.hasta)}.`};
+  const registrar=async()=>{if(!ult)return;
+    try{await S.db.collection("rh_documentos").add({empleadoId:e.id,empleado:nombreEmp(e),tipo:"dotacion",plantilla:"dotacion",titulo:"Entrega de dotación",campos:ult.x,fecha:hoy(),mes:hoy().slice(0,7),createdBy:S.uid,createdAt:nowISO()});
+      registrarActividad("Entregó dotación",`${nombreEmp(e)} · ${ult.x.items.map(i=>`${i.cantidad} ${i.prenda}`).join(", ")} · ${fechaCorta(ult.x.desde)} a ${fechaCorta(ult.x.hasta)}`)}catch(err){console.warn("dotacion",err)}};
+  const nombreArch=()=>`Entrega de dotacion - ${nombreEmp(e)}`.replace(/[\\/:*?"<>|]/g,"");
+  const f2=(a,b)=>h("div",{class:"row",style:"flex-wrap:nowrap"},h("div",{style:"flex:1"},a),h("div",{style:"flex:1"},b));
+  cerrar=abrirModal("Entrega de dotación",h("div",{class:"grid2",style:"align-items:start"},
+    h("div",{class:"stack"},campo("Empleado",empBox,true),
+      f2(campo("Fecha de entrega",I.fecha,true),campo("Ciudad de firma",I.ciudad)),
+      f2(campo("Período que cubre desde",I.desde,true),campo("Hasta",I.hasta,true,"Se llena solo: fin del cuatrimestre")),
+      h("div",{class:"stack",style:"gap:6px"},h("strong",{class:"small"},"Prendas: nombre, cantidad y talla"),filasBox,h("button",{type:"button",class:"sm",style:"align-self:flex-start",onclick:()=>{fila("","1","").P.focus();calc()}},"+ Agregar otra prenda")),
+      campo("Observaciones",I.obs),msg,
+      h("div",{class:"row"},h("button",{class:"pri",onclick:async()=>{if(!ult)return;await registrar();imprimir(nombreArch(),[ult.d.html])}},"Imprimir o guardar en PDF"),
+        h("button",{onclick:async()=>{if(!ult)return;await registrar();descargarWord(nombreArch(),[ult.d.html])}},"Descargar en Word"))),
+    h("div",{class:"stack"},h("h3",{style:"margin:0"},"Vista previa"),prev)),{ancho:1200});
+  ponerEmp(empId||"");calc();
+}
+window.rhEntregaDotacion=entregaDotacion;
+
 /* ---------- empleados ---------- */
 function formEmpleado(e){
   const I={},nuevo=!e,p=P();const msg=h("div",{class:"status bad",hidden:true});let cerrar=null;
@@ -580,7 +640,7 @@ function fichaEmpleado(e){
   const selDoc=h("select",{id:"fe-doc","aria-label":"Generar documento",style:"max-width:240px",onchange:ev=>{const t=ev.target.value;ev.target.value="";if(t){cerrar();generador(t,{empleadoId:e.id})}}},h("option",{value:""},"Generar documento…"),Object.entries(DOCS).map(([k,d])=>h("option",{value:k},d.l)));
   cerrar=abrirModal(nombreEmp(e),h("div",{class:"stack"},
     h("div",{class:"row"},est.chip,esServ(e)?h("span",{class:"chip info"},"Prestación de servicios"):h("span",{class:"chip neu"},CONTRATO_LBL[e.tipoContrato]||"Contrato"),e.tipoContrato==="fijo"&&e.fechaFin?h("span",{class:"chip info"},"Vence el "+fmtF(e.fechaFin)):null),
-    h("div",{class:"row"},h("button",{class:"pri",onclick:()=>{cerrar();formEmpleado(e)}},"Editar ficha"),h("button",{onclick:()=>{cerrar();modalNovedad(e.id)}},"Registrar novedad"),esServ(e)?null:h("button",{onclick:()=>{cerrar();liquidarVacaciones(e.id)}},"Liquidar vacaciones"),selDoc,
+    h("div",{class:"row"},h("button",{class:"pri",onclick:()=>{cerrar();formEmpleado(e)}},"Editar ficha"),h("button",{onclick:()=>{cerrar();modalNovedad(e.id)}},"Registrar novedad"),esServ(e)?null:h("button",{onclick:()=>{cerrar();liquidarVacaciones(e.id)}},"Liquidar vacaciones"),esServ(e)?null:h("button",{onclick:()=>{cerrar();entregaDotacion(e.id)}},"Entrega de dotación"),selDoc,
       est.k==="activo"&&!e.fechaRetiro?h("button",{class:"danger",onclick:()=>{cerrar();retirar(e)}},"Retirar"):
       h("button",{onclick:ev=>confirmarEnPagina(ev.currentTarget,"Confirmar reintegro",async()=>{try{await S.db.doc("rh_empleados/"+e.id).update({fechaRetiro:"",motivoRetiro:"",updatedBy:S.uid,updatedAt:nowISO()});registrarActividad("Deshizo retiro de empleado",nombreEmp(e));cerrar();toast("El empleado vuelve a estar activo.")}catch(err){toast("No se pudo guardar.")}})},"Deshacer retiro")),
     h("dl",{class:"dl"},dd("Documento",`${(e.tipoDoc||"CC")} ${e.documento}${e.expedicion?" de "+e.expedicion:""}`),dd("Cargo",[e.cargo,e.area].filter(Boolean).join(" · ")),dd("Ingreso",fmtF(e.fechaIngreso)),
@@ -873,6 +933,7 @@ VIEWS.rh_documentos={
     el.append(h("div",null,h("h2",null,"Contratos y documentos"),h("div",{class:"small muted"},"Elige el documento, elige el empleado y la app lo llena con sus datos. Queda listo para imprimir, guardar en PDF o abrir en Word.")),
       h("div",{class:"card doc-card",style:"border-color:var(--accent)"},h("h3",null,"¿Ingresa alguien nuevo?"),h("p",{class:"muted"},"Crea al empleado y al guardar se generan su contrato y su autorización de datos, listos para firmar."),h("button",{class:"pri",onclick:()=>formEmpleado(null)},"Nuevo empleado")),
       h("div",{class:"doc-grid"},h("div",{class:"card doc-card"},h("h3",null,"Liquidación de vacaciones y paz y salvo"),h("p",{class:"small muted"},"Eliges el empleado y el período; calcula los días causados, el valor de los días compensados o disfrutados y arma la constancia con el paz y salvo."),h("button",{id:"doc-vacaciones",onclick:()=>liquidarVacaciones("")},"Liquidar")),
+        h("div",{class:"card doc-card"},h("h3",null,"Entrega de dotación"),h("p",{class:"small muted"},"Eliges el empleado, las prendas (camisa, buzo, pantalón, zapatos…) con cantidad y talla, y el período que cubre. Arma la constancia para que la firme."),h("button",{id:"doc-dotacion",onclick:()=>entregaDotacion("")},"Generar")),
         Object.entries(DOCS).map(([k,d])=>h("div",{class:"card doc-card"},h("h3",null,d.l),h("p",{class:"small muted"},d.d),h("button",{id:"doc-"+k,onclick:()=>generador(k)},"Generar")))),
       h("div",{class:"card"},h("h3",null,"Documentos generados"),this.hist));
   },
